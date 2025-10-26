@@ -13,6 +13,7 @@ class Workout(Base):
     duration_minutes = Column(Integer)
     playlist_id = Column(String, nullable=True)  # Spotify playlist ID
     playlist_name = Column(String, nullable=True)
+    playlist_url = Column(String, nullable=True)
     completed = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

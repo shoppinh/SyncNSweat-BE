@@ -136,21 +136,22 @@ class SpotifyService:
         )
         return response.json()
     
-    async def get_seed_tracks(self, access_token: str, genres: list, workout_type: str) -> list:
-        """Get seed tracks based on genres and workout type."""
+    async def get_seed_tracks(self, access_token: str, genres: list, fitness_goal: str) -> list:
+        """Get seed tracks based on genres and fitness goal."""
         headers = {
             "Authorization": f"Bearer {access_token}"
         }
         
-        # Map workout types to appropriate genres
-        workout_genres = {
-            "cardio": ["electronic", "dance", "pop"],
-            "strength": ["hip-hop", "rock", "metal"],
-            "yoga": ["ambient", "chill", "classical"],
+        # Map fitness goals to appropriate genres
+        fitness_genres = {
+            "weight_loss": ["electronic", "dance", "pop"],
+            "muscle_gain": ["hip-hop", "rock", "metal"],
+            "flexibility": ["ambient", "chill", "classical"],
         }
+        
 
         # Combine workout-specific genres with user preferences
-        selected_genres = workout_genres.get(workout_type, [])
+        selected_genres = fitness_genres.get(fitness_goal, [])
         if genres:
             selected_genres.extend([g for g in genres if g not in selected_genres])
         selected_genres = selected_genres[:5]  # Spotify allows max 5 seed genres
@@ -175,20 +176,20 @@ class SpotifyService:
 
 
     def create_workout_playlist(self, access_token: str, track_uris: list, 
-                              workout_type: str, user_id: str) -> dict:
+                              fitness_goal: str, user_id: str) -> dict:
         """Create a new playlist with the recommended tracks."""
         # Get user profile for display name
         user_profile = self.get_user_profile(access_token)
         display_name = user_profile.get("display_name", "User")
         
         # Create playlist name and description
-        workout_names = {
-            "cardio": "Cardio Boost",
-            "strength": "Power Mix",
-            "yoga": "Zen Flow",
+        fitness_names = {
+            "weight_loss": "Fat Burn",
+            "muscle_gain": "Muscle Builder",
+            "flexibility": "Flexibility Flow",
         }
-        playlist_name = f"{workout_names.get(workout_type, 'Workout')} for {display_name}"
-        description = f"Custom {workout_type.title()} workout playlist created by SyncNSweat"
+        playlist_name = f"{fitness_names.get(fitness_goal, 'Workout')} for {display_name}"
+        description = f"Custom {fitness_goal.title()} workout playlist created by SyncNSweat"
         
         # Create the playlist
         playlist = self.create_playlist(

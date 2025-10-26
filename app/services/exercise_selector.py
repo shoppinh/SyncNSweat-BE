@@ -119,12 +119,12 @@ class ExerciseSelectorService:
     
     def swap_exercise(
         self,
-        exercise_id: str,
+        exercise_id: int,
         muscle_group: str,
         equipment: str,
         fitness_level: str,
         available_equipment: List[str],
-        recently_used_exercises: List[str] = None
+        recently_used_exercises: List[int] = None
     ) -> Dict[str, Any]:
         """
         Swap an exercise with another one that targets the same muscle group.

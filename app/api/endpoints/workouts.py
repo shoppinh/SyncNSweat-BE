@@ -1,20 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
-from typing import List
 from datetime import datetime, timedelta
+from typing import  Any, Dict, List, cast
 
-from app.db.session import get_db
-from app.models.user import User
-from app.models.profile import Profile
-from app.models.preferences import Preferences
-from app.models.workout import Exercise, Workout, WorkoutExercise
-from app.schemas.workout import UserProfile, WorkoutAIResponse, WorkoutBase, WorkoutCreate, WorkoutResponse, WorkoutSuggest, WorkoutUpdate, ScheduleResponse, ScheduleRequest
-from app.schemas.exercise import WorkoutExerciseCreate, WorkoutExerciseResponse, WorkoutExerciseUpdate
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session, selectinload
+
 from app.core.security import get_current_user
-from app.services.scheduler import SchedulerService
+from app.db.session import get_db
+from app.models.preferences import Preferences
+from app.models.profile import Profile
+from app.models.user import User
+from app.models.workout import Exercise, Workout, WorkoutExercise
+from app.schemas.exercise import (WorkoutExerciseCreate,
+                                  WorkoutExerciseResponse,
+                                  WorkoutExerciseUpdate)
+from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
+                                 WorkoutCreate, WorkoutResponse,
+                                 WorkoutSuggest, WorkoutUpdate)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
+from app.services.scheduler import SchedulerService
 
 # Define constants for error messages
 WORKOUT_NOT_FOUND = "Workout not found"
@@ -29,8 +33,8 @@ router = APIRouter()
 def read_workouts(
     skip: int = 0,
     limit: int = 100,
-    start_date: datetime = None,
-    end_date: datetime = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -47,49 +51,101 @@ def read_workouts(
     workouts = query.order_by(Workout.date.desc()).offset(skip).limit(limit).all()
     return workouts
 
-@router.post("/suggest-workout-today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
-def create_random_workout(
-    suggest_in: WorkoutSuggest,
+@router.post("/suggest-workout-schedule", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
+async def suggest_workout_schedule(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Create a random workout for the current user.
+    Create a workout with spotify playlist for the current user using AI recommendations and persist it.
 
-    - **available_equipment**: List of equipment options you can use for your workout.  
-      Example:  
-      `["assisted", "band", "barbell", "body weight", "bosu ball", "cable", "dumbbell", "elliptical machine", "ez barbell", "hammer", "kettlebell", "leverage machine", "medicine ball", "olympic barbell", "resistance band", "roller", "rope", "skierg machine", "sled machine", "smith machine", "stability ball", "stationary bike", "stepmill machine", "tire", "trap bar", "upper body ergometer", "weighted", "wheel roller"]`
-
-    - **focus**: The main muscle group or goal for the workout.  
-      Example:  
-      `["abductors", "abs", "adductors", "biceps", "calves", "cardiovascular system", "delts", "forearms", "glutes", "hamstrings", "lats", "levator scapulae", "pectorals", "quads", "serratus anterior", "spine", "traps", "triceps", "upper back"]`
+    This endpoint will call the Gemini AI to generate a workout plan, then save a
+    `Workout` and associated `WorkoutExercise` rows. If an exercise name returned
+    by the AI doesn't exist in the `exercises` table, a minimal `Exercise` row
+    will be created.
     """
-    db_workout = Workout(user_id=current_user.id, focus=suggest_in.focus, duration_minutes=suggest_in.duration_minutes, date=datetime.now(), playlist_id=suggest_in.playlist_id, playlist_name=suggest_in.playlist_name)
-    db.add(db_workout)
-    db.flush()
-    
-    exercise_selector = ExerciseSelectorService(db)
-    
-    workout_exercises = exercise_selector.select_exercises_for_workout(
-        focus=suggest_in.focus,
-        fitness_level=suggest_in.fitness_level,
-        available_equipment=suggest_in.available_equipment,
-        workout_duration_minutes=suggest_in.duration_minutes
+    # Load profile and preferences
+    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    if not profile:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND)
+
+    preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+    if not preferences:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND)
+
+
+    # Instantiate GeminiService directly so we can pass db/current_user
+    gemini_service = GeminiService()
+
+    try:
+        ai_plan = await gemini_service.get_workout_and_playlist(profile, preferences)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating AI recommendations: {str(e)}")
+
+    # Create workout record
+    workout_plan: Dict[str, Any] = ai_plan.get("workout_plan") or {}
+    playlist: Dict[str, str] = ai_plan.get("playlist") or {}
+    playlist_id = playlist.get("playlist_id")
+    playlist_name = playlist.get("playlist_name")
+    playlist_url = playlist.get("playlist_url")
+
+    db_workout = Workout(
+        user_id=current_user.id,
+        duration_minutes=profile.workout_duration_minutes,
+        date=datetime.now(),
+        playlist_id=playlist_id,
+        playlist_name=playlist_name,
+        playlist_url=playlist_url
     )
-    
-    exercises_to_add = [
-        WorkoutExercise(
+
+    db.add(db_workout)
+    db.flush()  # get id for FK relationships
+
+    workout_exercises = workout_plan.get("exercises", [])
+    created_workout_exercises: List[WorkoutExercise] = []
+
+    for idx, workout_ex in enumerate(workout_exercises):
+        # Extract fields from AI response with safe fallbacks
+        name = workout_ex.get("name") or workout_ex.get("exercise") 
+        sets = workout_ex.get("sets") or 1
+        reps = workout_ex.get("reps") or ""
+        # AI may return rest in minutes; store seconds in DB
+        rest_minutes = workout_ex.get("rest") if workout_ex.get("rest") is not None else workout_ex.get("rest_minutes")
+        try:
+            rest_seconds = int(float(rest_minutes) * 60) if rest_minutes is not None else None
+        except Exception:
+            rest_seconds = None
+
+        if not name:
+            # Skip malformed entry
+            continue
+
+        # Find existing exercise by name (case-insensitive), create if missing
+        exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(name)).first()
+        if not exercise_obj:
+            exercise_obj = Exercise(
+                name=name,
+                equipment=workout_ex.get("machine") or workout_ex.get("equipment") or None,
+                instructions=workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
+            )
+            db.add(exercise_obj)
+            db.flush()
+
+        workout_ex = WorkoutExercise(
             workout_id=db_workout.id,
-            **exercise_data
+            exercise_id=exercise_obj.id,
+            sets=int(sets) if sets is not None else None,
+            reps=str(reps) if reps is not None else None,
+            order=idx + 1,
+            rest_seconds=rest_seconds
         )
-        for _, exercise_data in enumerate(workout_exercises)
-    ]
-    db.bulk_save_objects(exercises_to_add)
-    db_workout.exercises = db.query(WorkoutExercise).filter(WorkoutExercise.workout_id == db_workout.id).order_by(WorkoutExercise.order)
+        db.add(workout_ex)
+        created_workout_exercises.append(workout_ex)
+
+    # Commit everything and return the persisted workout
     db.commit()
     db.refresh(db_workout)
 
-    
     return db_workout
 
 @router.post("/", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
@@ -380,7 +436,7 @@ def delete_workout_exercise(
 
 @router.post("/schedule", response_model=ScheduleResponse)
 def generate_workout_schedule(
-    schedule_request: ScheduleRequest = None,
+    schedule_request: ScheduleRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -420,7 +476,7 @@ def generate_workout_schedule(
     if existing_workouts and not regenerate:
         # Return existing workouts
         return ScheduleResponse(
-            workouts=existing_workouts,
+            workouts=cast(List[WorkoutResponse], existing_workouts),
             message="Returning existing workout schedule"
         )
 
@@ -431,19 +487,19 @@ def generate_workout_schedule(
         db.commit()
 
     # Generate new workout schedule
-    scheduler_service = SchedulerService()
+    scheduler_service = SchedulerService(db)
     workouts_data = scheduler_service.generate_weekly_schedule(
-        user_id=current_user.id,
-        available_days=profile.available_days,
+        user_id=cast(int, current_user.id),
+        available_days=cast(List[str], profile.available_days) if schedule_request else [],
         fitness_goal=profile.fitness_goal.value,
         fitness_level=profile.fitness_level.value,
-        available_equipment=preferences.available_equipment,
-        target_muscle_groups=preferences.target_muscle_groups,
-        workout_duration_minutes=profile.workout_duration_minutes
+        available_equipment=cast(List[str], preferences.available_equipment) if schedule_request else [],
+        target_muscle_groups=cast(List[str], preferences.target_muscle_groups) if schedule_request else [],
+        workout_duration_minutes=cast(int, profile.workout_duration_minutes) if schedule_request else 0
     )
 
     # Create workouts in the database
-    created_workouts = []
+    created_workouts: List[Workout] = []
     for workout_data in workouts_data:
         exercises = workout_data.pop("exercises", [])
 
@@ -467,7 +523,7 @@ def generate_workout_schedule(
         created_workouts.append(workout)
 
     return ScheduleResponse(
-        workouts=created_workouts,
+        workouts=cast(List[WorkoutResponse], created_workouts),
         message="Generated new workout schedule"
     )
 
@@ -530,12 +586,12 @@ def swap_workout_exercise(
     # Use the exercise selector service to find a replacement
     exercise_selector = ExerciseSelectorService(db)
     new_exercise_data = exercise_selector.swap_exercise(
-        exercise_id=exercise.exercise_id,
+        exercise_id=cast(int, exercise.exercise_id),
         muscle_group=exercise.muscle_group,
         equipment=exercise.equipment,
         fitness_level=profile.fitness_level.value,
-        available_equipment=preferences.available_equipment,
-        recently_used_exercises=recently_used_exercises
+        available_equipment=cast(List[str], preferences.available_equipment),
+        recently_used_exercises=cast(List[int],recently_used_exercises)
     )
 
     # Update the exercise with the new data
@@ -547,8 +603,8 @@ def swap_workout_exercise(
     exercise.sets = new_exercise_data["sets"]
     exercise.reps = new_exercise_data["reps"]
     exercise.rest_seconds = new_exercise_data["rest_seconds"]
-    exercise.completed_sets = 0
-    exercise.weights_used = []
+    setattr(exercise, "completed_sets", 0)
+    setattr(exercise, "weights_used", [])
 
     db.add(exercise)
     db.commit()
@@ -556,43 +612,4 @@ def swap_workout_exercise(
 
     return exercise
 
-@router.post("/ai-recommendations", response_model=WorkoutAIResponse)
-async def get_ai_workout_recommendations(
-    workout_type: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    gemini_service: GeminiService = Depends(lambda: GeminiService())
-):
-    """Get AI-enhanced workout recommendations."""
-    # we can get user profile based on current_user
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
-    if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND
-        )
-
-    preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-    if not preferences:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Preferences not found"
-        )
-    
-
-    try:
-        recommendations = await gemini_service.get_workout_recommendations(
-            profile,
-            preferences,
-            workout_type
-        )
-        return WorkoutAIResponse(
-            workout_plan=recommendations,
-            message="Successfully generated AI workout recommendations"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error generating AI recommendations: {str(e)}"
-        )
 

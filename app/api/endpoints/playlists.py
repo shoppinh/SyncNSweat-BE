@@ -1,11 +1,11 @@
 from app.core.config import settings
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, cast
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.profile import Profile
+from app.models.profile import FitnessGoal, Profile
 from app.models.preferences import Preferences
 from app.models.workout import Workout
 from app.services.gemini import GeminiService
@@ -32,8 +32,6 @@ def get_spotify_auth_url(
 
 @router.get("/spotify/recommendations")
 async def get_spotify_recommendations(
-    workout_type: str = None,
-    duration_minutes: int = 60,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -77,7 +75,6 @@ async def get_spotify_recommendations(
     # seed_tracks = spotify_service.get_seed_tracks(
     #     access_token=access_token,
     #     genres=preferences.music_genres,
-    #     workout_type=workout_type,
     # )
 
 
@@ -85,15 +82,12 @@ async def get_spotify_recommendations(
     recommendations = await gemini_service.recommend_spotify_playlist(
         user_profile=profile,
         user_preferences=preferences,
-        workout_type=workout_type,
-        duration_minutes=duration_minutes
     )
 
     # Create a new playlist for the workout
     # playlist = spotify_service.create_workout_playlist(
     #     access_token=access_token,
     #     track_uris=[track["uri"] for track in recommendations["tracks"]],
-    #     workout_type=workout_type,
     #     user_id=current_user.id,
     # )
 
@@ -101,7 +95,7 @@ async def get_spotify_recommendations(
 
 
 @router.get("/spotify/playlists")
-def get_user_playlists(
+async def get_user_playlists(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
@@ -128,17 +122,39 @@ def get_user_playlists(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
 
-    # This is a placeholder for the actual Spotify playlists logic
-    # In a real implementation, we would use the SpotifyService to get the user's playlists
+    # Initialize SpotifyService
+    spotify_service = SpotifyService()
 
-    # Mock response
-    return {
-        "playlists": [
-            {"id": "playlist1", "name": "Workout Mix 1", "tracks": 15},
-            {"id": "playlist2", "name": "Cardio Playlist", "tracks": 20},
-            {"id": "playlist3", "name": "Strength Training", "tracks": 18},
-        ]
-    }
+    spotify_data = preferences.spotify_data or {}
+    access_token = spotify_data.get("access_token")
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Spotify access token not found",
+        )
+
+    try:
+        resp = await spotify_service.get_user_playlists(access_token, limit=50)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Spotify API error: {e}")
+
+    items = resp.get("items") if isinstance(resp, dict) else None
+    if not items:
+        return {"playlists": []}
+
+    playlists = []
+    for p in items:
+        playlists.append(
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "tracks": p.get("tracks", {}).get("total") if isinstance(p.get("tracks"), dict) else None,
+                "external_url": p.get("external_urls", {}).get("spotify") if isinstance(p.get("external_urls"), dict) else None,
+                "image_url": p.get("images", [None])[0].get("url") if p.get("images") and isinstance(p.get("images"), list) and p.get("images")[0] else None,
+            }
+        )
+
+    return {"playlists": playlists}
 
 
 @router.get("/workout/{workout_id}")

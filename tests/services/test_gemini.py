@@ -27,7 +27,7 @@ async def test_preference_analysis(gemini_service):
     
     result = await gemini_service.analyze_preferences(
         user_preferences=test_preferences,
-        workout_type="cardio"
+        fitness_goal="weight_loss"
     )
     
     assert isinstance(result, dict)
