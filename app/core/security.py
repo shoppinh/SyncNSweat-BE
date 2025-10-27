@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use Argon2 as the primary hashing algorithm and keep bcrypt for
+# verification of existing hashes. New passwords will be hashed with
+# Argon2 (a modern, memory-hard algorithm) while older bcrypt hashes
+# will continue to verify until they are migrated.
+pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/token")
 
