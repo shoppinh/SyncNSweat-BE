@@ -5,7 +5,7 @@ from app.core.config import settings
 from app.models.preferences import Preferences
 from app.schemas.preferences import PreferencesResponse
 from app.schemas.profile import ProfileResponse
-from app.models.profile import Profile
+from app.models.profile import FitnessLevel, Profile
 from app.services.spotify import SpotifyService
 
 class GeminiService:
@@ -21,6 +21,15 @@ class GeminiService:
         """
         Generate personalized workout recommendations using the Gemini AI model asynchronously.
         """
+        # Determine number of exercises without evaluating SQLAlchemy ColumnElement truthiness
+        val = getattr(user_profile, "fitness_level", None)
+        if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
+            num_exercises = 8
+        elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
+            num_exercises = 6
+        else:
+            num_exercises = 4
+
         prompt = f"""
         As a fitness expert, create a personalized workout plan for:
         - Fitness level: {user_profile.fitness_level if user_profile.fitness_level else 'beginner'}
@@ -31,10 +40,11 @@ class GeminiService:
          + Available equipment: {user_preferences.available_equipment if user_preferences.available_equipment else ['dumbbells', 'resistance bands']}
          + Target muscle groups: {user_preferences.target_muscle_groups if user_preferences.target_muscle_groups else []}
          + Exercise types: {user_preferences.exercise_types if user_preferences.exercise_types else ['strength', 'cardio']}
+         + Number of exercises: {num_exercises}
 
 
         Format the response as a valid JSON object with the following keys:
-        - "exercises": a list of exercise objects, each with "name", "sets", "reps", "machine" and "rest" in minutes.
+        - "exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings.
         - "intensity": an integer representing the overall workout intensity from 1 to 10.
         - "duration": an integer for the recommended workout duration in minutes.
         - "notes": a string containing any specific form or safety tips.
@@ -92,12 +102,13 @@ class GeminiService:
                 "target_danceability": 0.7
             }
 
-    async def recommend_spotify_playlist(self,user_profile: ProfileResponse, user_preferences: PreferencesResponse):
+    async def recommend_spotify_playlist(self,user_profile: ProfileResponse, user_preferences: PreferencesResponse) -> Dict[str, Any]:
         # Fetch user's Spotify data
         # This assumes you have the user's Spotify access token stored and refreshed
         try:
             # Example: Get user's top tracks
             top_tracks = await self.spotify_service.get_current_user_top_tracks(user_preferences.spotify_data.get('access_token', ''))
+            # I want to check the results
             top_track_names = [track['name'] for track in top_tracks['items']]
 
             # Example: Get user's top artists
@@ -110,13 +121,14 @@ class GeminiService:
             return {
                 "message": "Error fetching Spotify data. Please ensure your Spotify account is connected and try again.",
                 "playlist_recommendations": [],
-                "playlist_url": None
+                "playlist_url": None,
+                "playlist_id": None,
+                "playlist_name": None
             }
 
         prompt = f"""
         You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences.
         Here's the user's information:
-        - User ID: {user_profile.id}
         - Preferred Genres: {', '.join(user_preferences.music_genres) if user_preferences.music_genres else 'None'}
         - User's Top Tracks: {', '.join(top_track_names[:5]) if top_track_names else 'None'}
         - User's Top Artists: {', '.join(top_artist_names[:5]) if top_artist_names else 'None'}
@@ -200,53 +212,52 @@ class GeminiService:
                 last = None
         return last
 
-    def _normalize_exercise(self, ex: Any) -> Optional[Dict[str, Any]]:
+    def _normalize_exercise(self, ex: Dict[str,Any]) -> Optional[Dict[str, Any]]:
         """Normalize a single exercise entry from the LLM into a predictable dict or return None."""
-        if not isinstance(ex, dict):
-            return None
         
         # Extract name from various possible keys
         name = ex.get("name") or ex.get("exercise") or ex.get("title")  # type: ignore
         if not name:
             return None
 
-        sets = self._parse_sets(ex.get("sets"))  # type: ignore
-        reps = ex.get("reps", "")  # type: ignore
-        machine = ex.get("machine") or ex.get("equipment")  # type: ignore
-        rest_minutes = self._parse_rest(ex.get("rest"), ex.get("rest_minutes"))  # type: ignore
-        notes = ex.get("notes") or ex.get("instruction")  # type: ignore
+        body_part = ex.get("body_part")  # type: ignore
+        target = ex.get("target")  # type: ignore
+        equipment = ex.get("equipment")  # type: ignore
+        gif_url = ex.get("gif_url")  # type: ignore
+        sets = ex.get("sets")  # type: ignore
+        reps = ex.get("reps")  # type: ignore
+        rest_seconds = ex.get("rest_seconds")  # type: ignore
+        secondary_muscles = self._parse_secondary_muscles(ex.get("secondary_muscles"))  # type: ignore
+        instructions = self._parse_instructions(ex.get("instructions"))  # type: ignore
 
         return {
             "name": str(name) if name else "",
-            "sets": sets,
-            "reps": str(reps) if reps else "",
-            "machine": str(machine) if machine else None,
-            "rest_minutes": rest_minutes,
-            "notes": str(notes) if notes else None,
+            "target": str(target) if target else "",
+            "body_part": str(body_part) if body_part else "",
+            "secondary_muscles": secondary_muscles,
+            "equipment": str(equipment) if equipment else "",
+            "gif_url": str(gif_url) if gif_url else "",
+            "instructions": instructions,
+            "sets": int(sets) if isinstance(sets, (int, float, str)) and str(sets).isdigit() else 3,
+            "reps": str(reps) if reps else "10",
+            "rest_seconds": int(rest_seconds) if isinstance(rest_seconds, (int, float, str)) and str(rest_seconds).isdigit() else 60,
         }
 
-    def _parse_sets(self, sets_val: Any) -> Optional[int]:
-        """Parse sets value from various formats."""
-        if sets_val is None:
-            return None
-        if isinstance(sets_val, int):
-            return sets_val
-        if isinstance(sets_val, (float, str)):
-            try:
-                return int(str(sets_val).strip().split()[0])
-            except (ValueError, IndexError):
-                return None
-        return None
+    def _parse_secondary_muscles(self, raw: Any) -> List[str]:
+        """Parse secondary muscles from various possible input formats."""
+        if isinstance(raw, list):
+            return [str(muscle) for muscle in raw if isinstance(muscle, str)]
+        elif isinstance(raw, str):
+            return [muscle.strip() for muscle in raw.split(",")]
+        return []
 
-    def _parse_rest(self, rest: Any, rest_minutes: Any) -> Optional[float]:
-        """Parse rest time from various formats."""
-        rest_val = rest if rest is not None else rest_minutes
-        if rest_val is None:
-            return None
-        try:
-            return float(rest_val)
-        except (ValueError, TypeError):
-            return None
+    def _parse_instructions(self, raw: Any) -> List[str]:
+        """Parse instructions from various possible input formats."""
+        if isinstance(raw, list):
+            return [step.strip() for step in raw if isinstance(step, str)]
+        elif isinstance(raw, str):
+            return [raw.strip()]
+        return []
 
     def _normalize_workout(self, raw_plan: Any, user_profile: Profile) -> Dict[str, Any]:
         """Normalize a raw LLM workout plan into a predictable dict shape."""

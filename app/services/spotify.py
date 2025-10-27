@@ -2,6 +2,7 @@ import base64
 import requests
 from typing import Dict, List, Optional, Any
 from app.core.config import settings
+from app.services.spotify_interceptor import SpotifyInterceptor, SpotifyTokenExpiredException
 
 class SpotifyService:
     def __init__(self):
@@ -11,6 +12,85 @@ class SpotifyService:
         self.token_url = "https://accounts.spotify.com/api/token"
         self.api_base_url = "https://api.spotify.com/v1"
     
+    def _create_interceptor(self) -> SpotifyInterceptor:
+        """Create a new interceptor instance with token refresh callback."""
+        return SpotifyInterceptor(refresh_token_callback=self.refresh_access_token)
+    
+    def _make_api_call_with_interceptor(
+        self,
+        method: str,
+        url: str,
+        access_token: str,
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[float] = None,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Make an API call using the interceptor for automatic token handling.
+        
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Full API endpoint URL
+            access_token: Current Spotify access token
+            refresh_token: Spotify refresh token (optional)
+            expires_at: Unix timestamp when token expires (optional)
+            params: URL query parameters
+            data: Form data for POST requests
+            json_data: JSON body for POST requests
+            
+        Returns:
+            Parsed JSON response
+        """
+        interceptor = self._create_interceptor()
+        try:
+            return interceptor.make_request(
+                method=method,
+                url=url,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at,
+                params=params,
+                data=data,
+                json_data=json_data,
+            )
+        except SpotifyTokenExpiredException as e:
+            # If token refresh fails, raise an error
+            raise Exception(f"Token refresh failed: {str(e)}")
+    
+    def get_access_token_with_interceptor(
+        self, code: str, redirect_uri: str
+    ) -> Dict[str, Any]:
+        """
+        Exchange authorization code for access token using interceptor.
+        
+        Returns a dict with access_token, refresh_token, and expires_in
+        """
+        auth_header = base64.b64encode(
+            f"{self.client_id}:{self.client_secret}".encode()
+        ).decode()
+        headers = {
+            "Authorization": f"Basic {auth_header}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri
+        }
+        
+        response = requests.post(self.token_url, headers=headers, data=data)
+        token_response = response.json()
+        
+        # Store expiration timestamp if expires_in is provided
+        if "expires_in" in token_response:
+            import time
+            token_response["expires_at"] = time.time() + token_response["expires_in"]
+        
+        return token_response
+    
+
     def get_auth_url(self, redirect_uri: str, state: Optional[str] = None) -> str:
         """
         Get the Spotify authorization URL.
@@ -62,93 +142,87 @@ class SpotifyService:
         response = requests.post(self.token_url, headers=headers, data=data)
         return response.json()
     
-    async def get_user_profile(self, access_token: str) -> Dict[str, Any]:
+    async def get_user_profile(self, access_token: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
         """
-        Get the user's Spotify profile.
+        Get the user's Spotify profile with automatic token refresh.
         """
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        
-        response = requests.get(f"{self.api_base_url}/me", headers=headers)
-        return response.json()
+        return self._make_api_call_with_interceptor(
+            method="GET",
+            url=f"{self.api_base_url}/me",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at
+        )
     
-    async def get_user_playlists(self, access_token: str, limit: int = 50) -> Dict[str, Any]:
+    async def get_user_playlists(self, access_token: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None, limit: int = 50) -> Dict[str, Any]:
         """
-        Get the user's playlists.
+        Get the user's playlists with automatic token refresh.
         """
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        
-        response = requests.get(f"{self.api_base_url}/me/playlists?limit={limit}", headers=headers)
-        return response.json()
+        return self._make_api_call_with_interceptor(
+            method="GET",
+            url=f"{self.api_base_url}/me/playlists",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            params={"limit": limit}
+        )
     
     async def create_playlist(
         self,
         access_token: str,
         user_id: str,
         name: str,
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[float] = None,
         description: str = "",
         public: bool = False
     ) -> Dict[str, Any]:
         """
-        Create a new playlist.
+        Create a new playlist with automatic token refresh.
         """
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "name": name,
-            "description": description,
-            "public": public
-        }
-        
-        response = requests.post(
-            f"{self.api_base_url}/users/{user_id}/playlists",
-            headers=headers,
-            json=data
+        return self._make_api_call_with_interceptor(
+            method="POST",
+            url=f"{self.api_base_url}/users/{user_id}/playlists",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            json_data={
+                "name": name,
+                "description": description,
+                "public": public
+            }
         )
-        return response.json()
     
     async def add_tracks_to_playlist(
         self,
         access_token: str,
         playlist_id: str,
-        track_uris: List[str]
+        track_uris: List[str],
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[float] = None
     ) -> Dict[str, Any]:
         """
-        Add tracks to a playlist.
+        Add tracks to a playlist with automatic token refresh.
         """
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "uris": track_uris
-        }
-        
-        response = requests.post(
-            f"{self.api_base_url}/playlists/{playlist_id}/tracks",
-            headers=headers,
-            json=data
+        return self._make_api_call_with_interceptor(
+            method="POST",
+            url=f"{self.api_base_url}/playlists/{playlist_id}/tracks",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            json_data={"uris": track_uris}
         )
-        return response.json()
     
-    async def get_seed_tracks(self, access_token: str, genres: list, fitness_goal: str) -> list:
-        """Get seed tracks based on genres and fitness goal."""
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        
+    async def get_seed_tracks(self, access_token: str, genres: List[str], fitness_goal: str,
+                            refresh_token: Optional[str] = None, 
+                            expires_at: Optional[float] = None) -> List[str]:
+        """Get seed tracks based on genres and fitness goal with automatic token refresh."""
         # Map fitness goals to appropriate genres
         fitness_genres = {
             "weight_loss": ["electronic", "dance", "pop"],
             "muscle_gain": ["hip-hop", "rock", "metal"],
             "flexibility": ["ambient", "chill", "classical"],
         }
-        
 
         # Combine workout-specific genres with user preferences
         selected_genres = fitness_genres.get(fitness_goal, [])
@@ -157,29 +231,31 @@ class SpotifyService:
         selected_genres = selected_genres[:5]  # Spotify allows max 5 seed genres
 
         # Get recommendations based on genres to use as seeds
-        params = {
+        params: Dict[str, Any] = {
             "seed_genres": ",".join(selected_genres[:5]),
             "limit": 2  # Get 2 tracks to use as seeds
         }
         
-        response = requests.get(
-            f"{self.api_base_url}/recommendations",
-            headers=headers,
+        response_data = self._make_api_call_with_interceptor(
+            method="GET",
+            url=f"{self.api_base_url}/recommendations",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
             params=params
         )
-        
-        if response.status_code != 200:
-            raise Exception(f"Failed to get seed tracks: {response.json()}")
             
-        tracks = response.json().get("tracks", [])
+        tracks = response_data.get("tracks", [])
         return [track["id"] for track in tracks]
 
 
-    def create_workout_playlist(self, access_token: str, track_uris: list, 
-                              fitness_goal: str, user_id: str) -> dict:
+    async def create_workout_playlist(self, access_token: str, track_uris: List[str], 
+                                    fitness_goal: str, user_id: str, 
+                                    refresh_token: Optional[str] = None, 
+                                    expires_at: Optional[float] = None) -> Dict[str, Any]:
         """Create a new playlist with the recommended tracks."""
         # Get user profile for display name
-        user_profile = self.get_user_profile(access_token)
+        user_profile = await self.get_user_profile(access_token, refresh_token, expires_at)
         display_name = user_profile.get("display_name", "User")
         
         # Create playlist name and description
@@ -192,22 +268,26 @@ class SpotifyService:
         description = f"Custom {fitness_goal.title()} workout playlist created by SyncNSweat"
         
         # Create the playlist
-        playlist = self.create_playlist(
+        playlist = await self.create_playlist(
             access_token=access_token,
             user_id=user_id,
             name=playlist_name,
             description=description,
-            public=False  # Keep private by default
+            public=False,  # Keep private by default
+            refresh_token=refresh_token,
+            expires_at=expires_at
         )
         
         if "id" not in playlist:
             raise Exception(f"Failed to create playlist: {playlist}")
         
         # Add tracks to the playlist
-        result = self.add_tracks_to_playlist(
+        result = await self.add_tracks_to_playlist(
             access_token=access_token,
             playlist_id=playlist["id"],
-            track_uris=track_uris
+            track_uris=track_uris,
+            refresh_token=refresh_token,
+            expires_at=expires_at
         )
         
         if "snapshot_id" not in result:
@@ -221,45 +301,44 @@ class SpotifyService:
             "image_url": playlist["images"][0]["url"] if playlist.get("images") else None,
         }
 
-    async def get_current_user_top_tracks(self, access_token: str) -> dict:
-        """Get the user's top tracks."""
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        try: 
-            response = requests.get(f"{self.api_base_url}/me/top/tracks", headers=headers)
-            return {
-                "items": response.json().get("items", [])
-            }
-        except Exception as e:
-            return {
-                "items": []
-            }
-        
-    
-    
-    async def get_current_user_top_artists(self, access_token: str) -> dict:
-        """Get the user's top artists."""
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
+    async def get_current_user_top_tracks(self, access_token: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
+        """Get the user's top tracks with automatic token refresh."""
         try:
-            response = requests.get(f"{self.api_base_url}/me/top/artists", headers=headers)
-            return {
-                "items": response.json().get("items", [])
-            }
-        except Exception as e:
-            return {
-                "items": []
-            }
+            return self._make_api_call_with_interceptor(
+                method="GET",
+                url=f"{self.api_base_url}/me/top/tracks",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at
+            )
+        except Exception:
+            return {"items": []}
         
-    async def search_tracks(self, access_token: str, search_query: str) -> dict:
-        """Search for tracks."""
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        response = requests.get(f"{self.api_base_url}/search", headers=headers, params={"q": search_query, "type": "track"})
-        return response.json()
+    
+    
+    async def get_current_user_top_artists(self, access_token: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
+        """Get the user's top artists with automatic token refresh."""
+        try:
+            return self._make_api_call_with_interceptor(
+                method="GET",
+                url=f"{self.api_base_url}/me/top/artists",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at
+            )
+        except Exception:
+            return {"items": []}
+        
+    async def search_tracks(self, access_token: str, search_query: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
+        """Search for tracks with automatic token refresh."""
+        return self._make_api_call_with_interceptor(
+            method="GET",
+            url=f"{self.api_base_url}/search",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+            params={"q": search_query, "type": "track"}
+        )
 
 
 

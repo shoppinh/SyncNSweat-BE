@@ -102,7 +102,7 @@ async def suggest_workout_schedule(
     db.add(db_workout)
     db.flush()  # get id for FK relationships
 
-    workout_exercises = workout_plan.get("exercises", [])
+    workout_exercises: List[WorkoutExercise] = workout_plan.get("exercises", [])
     created_workout_exercises: List[WorkoutExercise] = []
 
     for idx, workout_ex in enumerate(workout_exercises):
@@ -110,12 +110,8 @@ async def suggest_workout_schedule(
         name = workout_ex.get("name") or workout_ex.get("exercise") 
         sets = workout_ex.get("sets") or 1
         reps = workout_ex.get("reps") or ""
-        # AI may return rest in minutes; store seconds in DB
-        rest_minutes = workout_ex.get("rest") if workout_ex.get("rest") is not None else workout_ex.get("rest_minutes")
-        try:
-            rest_seconds = int(float(rest_minutes) * 60) if rest_minutes is not None else None
-        except Exception:
-            rest_seconds = None
+        # AI may return rest in seconds; store seconds in DB
+        rest_seconds = workout_ex.get("rest_seconds") if workout_ex.get("rest_seconds") is not None else 180 
 
         if not name:
             # Skip malformed entry
@@ -136,6 +132,7 @@ async def suggest_workout_schedule(
                 body_part=workout_ex.get("body_part") or workout_ex.get("bodyPart") or "General",
                 secondary_muscles=workout_ex.get("secondary_muscles") if isinstance(workout_ex.get("secondary_muscles"), list) else None,
                 equipment=workout_ex.get("machine") or workout_ex.get("equipment") or None,
+                gif_url=workout_ex.get("gif_url") or workout_ex.get("gifUrl") or None,
                 instructions=workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
             )
             db.add(exercise_obj)
