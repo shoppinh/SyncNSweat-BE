@@ -168,7 +168,12 @@ class GeminiService:
 
             if recommended_tracks_uris:
                 # Create a new playlist
-                playlist_name = f"SyncNSweat - {', '.join(user_preferences.music_genres)} {user_profile.fitness_goal} {user_profile.fitness_level} Playlist"
+                playlist_genres = ', '.join(user_preferences.music_genres or []) if getattr(user_preferences, 'music_genres', None) else ''
+                fitness_goal_val = getattr(user_profile, 'fitness_goal', None)
+                fitness_goal_str = getattr(fitness_goal_val, 'value', None) or (str(fitness_goal_val) if fitness_goal_val is not None else 'general_fitness')
+                fitness_level_val = getattr(user_profile, 'fitness_level', None)
+                fitness_level_str = getattr(fitness_level_val, 'value', None) or (str(fitness_level_val) if fitness_level_val is not None else 'beginner')
+                playlist_name = f"SyncNSweat - {playlist_genres} {fitness_goal_str}, {fitness_level_str} Playlist"
                 new_playlist = await self.spotify_service.create_playlist(user_preferences.spotify_data.get('access_token', ''), user_spotify_profile.get('id', ''), playlist_name, public=False)
                 if new_playlist:
                     await self.spotify_service.add_tracks_to_playlist(user_preferences.spotify_data.get('access_token', ''), new_playlist['id'], recommended_tracks_uris)

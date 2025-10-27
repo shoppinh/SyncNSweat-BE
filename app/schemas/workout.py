@@ -5,10 +5,10 @@ from app.schemas.exercise import WorkoutExerciseCreate, WorkoutExerciseResponse
 
 class WorkoutBase(BaseModel):
     date: Optional[datetime] = None
-    focus: Optional[str] = None
     duration_minutes: Optional[int] = None
     playlist_id: Optional[str] = None
     playlist_name: Optional[str] = None
+    playlist_url: Optional[str] = None
     completed: Optional[bool] = False
 
 class WorkoutCreate(WorkoutBase):

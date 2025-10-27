@@ -77,6 +77,7 @@ async def suggest_workout_schedule(
     # Instantiate GeminiService directly so we can pass db/current_user
     gemini_service = GeminiService()
 
+
     try:
         ai_plan = await gemini_service.get_workout_and_playlist(profile, preferences)
     except Exception as e:
@@ -120,18 +121,27 @@ async def suggest_workout_schedule(
             # Skip malformed entry
             continue
 
-        # Find existing exercise by name (case-insensitive), create if missing
-        exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(name)).first()
+        # Find existing exercise by name (case-insensitive).
+        # First try an exact case-insensitive match, then fall back to a contains match
+        # (useful when AI returns slightly different spacing/casing).
+        name_clean = str(name).strip()
+        exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(name_clean)).first()
+        if not exercise_obj:
+            pattern = f"%{name_clean}%"
+            exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(pattern)).first()
         if not exercise_obj:
             exercise_obj = Exercise(
                 name=name,
+                target=workout_ex.get("target") or "General",
+                body_part=workout_ex.get("body_part") or workout_ex.get("bodyPart") or "General",
+                secondary_muscles=workout_ex.get("secondary_muscles") if isinstance(workout_ex.get("secondary_muscles"), list) else None,
                 equipment=workout_ex.get("machine") or workout_ex.get("equipment") or None,
                 instructions=workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
             )
             db.add(exercise_obj)
             db.flush()
 
-        workout_ex = WorkoutExercise(
+        workout_ex_to_create = WorkoutExercise(
             workout_id=db_workout.id,
             exercise_id=exercise_obj.id,
             sets=int(sets) if sets is not None else None,
@@ -139,8 +149,8 @@ async def suggest_workout_schedule(
             order=idx + 1,
             rest_seconds=rest_seconds
         )
-        db.add(workout_ex)
-        created_workout_exercises.append(workout_ex)
+        db.add(workout_ex_to_create)
+        created_workout_exercises.append(workout_ex_to_create)
 
     # Commit everything and return the persisted workout
     db.commit()
