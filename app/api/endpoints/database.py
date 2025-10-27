@@ -32,7 +32,6 @@ def synchronize_database(
     # Fetch all exercises from ExerciseDB API
     
     exercises = [{
-        "id": ex["id"],
         "name": ex["name"],
         "body_part": ex["bodyPart"],
         "target": ex["target"],
