@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     EXERCISE_API_HOST: Optional[str] = os.getenv("EXERCISE_API_HOST")
     
     # Google Gemini settings
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    DEFAULT_SPOTIFY_USER_PASSWORD: str = os.getenv("DEFAULT_SPOTIFY_USER_PASSWORD", "")
 
 
 settings = Settings()

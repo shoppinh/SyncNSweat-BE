@@ -11,7 +11,6 @@ from app.core.security import (
     create_access_token,
     verify_password,
     get_password_hash,
-    get_current_user,
 )
 from app.core.config import settings
 from app.schemas.token import Token
@@ -89,27 +88,27 @@ def login_for_access_token(
     return login(form_data, db)
 
 
-@router.post("/refresh-token", response_model=Token)
-def refresh_token(current_user: User = Depends(get_current_user)):
+@router.get("/spotify/login")
+def spotify_login():
     """
-    Refresh access token.
+    Initiate Spotify OAuth login flow.
+    Redirects user to Spotify authorization URL.
     """
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": current_user.email}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    spotify_service = SpotifyService()
+    redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
+    auth_url= spotify_service.get_auth_url(redirect_uri, state="login")  # Use "login" as state to indicate login flow
+    return {"auth_url": auth_url}
 
 
 @router.get("/spotify/callback/")
-def spotify_callback(
+async def spotify_callback(
     code: str = Query(None, description="Spotify authorization code"),
     state: str = Query(None, description="State parameter (user ID)"),
     error: str = Query(None, description="Spotify error, if any"),
     db: Session = Depends(get_db),
 ):
     """
-    Handle Spotify OAuth callback.
+    Handle Spotify OAuth callback for login or connection.
     """
     if error:
         raise HTTPException(
@@ -123,49 +122,10 @@ def spotify_callback(
             detail="Authorization code is required",
         )
 
-    # Get user ID from state parameter
-    if not state:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="State parameter is required",
-        )
-
-    try:
-        user_id = int(state)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state parameter"
-        )
-
-    # Get user
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
-
-    # Get user profile
-    profile = db.query(Profile).filter(Profile.user_id == user.id).first()
-    if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
-        )
-
-    # Get user preferences
-    preferences = (
-        db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-    )
-    if not preferences:
-        # Create preferences if they don't exist
-        preferences = Preferences(profile_id=profile.id)
-        db.add(preferences)
-        db.commit()
-        db.refresh(preferences)
-
     # Exchange code for access token
     spotify_service = SpotifyService()
     redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
-    token_data = spotify_service.get_access_token(code, redirect_uri)
+    token_data = spotify_service.get_access_token_with_interceptor(code, redirect_uri)
 
     if "error" in token_data:
         raise HTTPException(
@@ -173,20 +133,100 @@ def spotify_callback(
             detail=f"Spotify token error: {token_data['error']}",
         )
 
-    # Store token in user preferences
-    preferences.spotify_connected = True
-    preferences.spotify_data = {
-        "access_token": token_data.get("access_token"),
-        "refresh_token": token_data.get("refresh_token"),
-        "expires_in": token_data.get("expires_in"),
-        "token_type": token_data.get("token_type"),
-    }
+    # Get user profile from Spotify
+    access_token = token_data.get("access_token") or ""
+    refresh_token = token_data.get("refresh_token")
+    expires_at = token_data.get("expires_at")
+    user_profile = await spotify_service.get_user_profile(access_token, refresh_token, expires_at)
+    spotify_user_id = user_profile.get("id")
+    email = user_profile.get("email")
 
-    db.add(preferences)
-    db.commit()
+    if not spotify_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to retrieve Spotify user ID",
+        )
 
-    # Return success message with redirect URL
+    # Check if user exists by Spotify ID
+    existing_user = db.query(User).filter(User.spotify_user_id == spotify_user_id).first()
+
+    if existing_user:
+        # User exists, log them in
+        user = existing_user
+    else:
+        # Check if email is already registered
+        if email and db.query(User).filter(User.email == email).first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered. Please login with email/password and connect Spotify.",
+            )
+
+        # Create new user
+        user = User(
+            email=email or f"spotify_{spotify_user_id}@spotify.local",
+            spotify_user_id=spotify_user_id,
+            is_active=True,
+            hashed_password=get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Create profile
+        profile = Profile(user_id=user.id, name=user_profile.get("display_name", ""))
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        # Create preferences
+        preferences = Preferences(profile_id=profile.id)
+        db.add(preferences)
+        db.commit()
+        db.refresh(preferences)
+
+    # Update or create preferences with Spotify data
+    profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+    if profile:
+        preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+        if not preferences:
+            preferences = Preferences(profile_id=profile.id)
+            db.add(preferences)
+            db.commit()
+            db.refresh(preferences)
+
+        preferences.spotify_connected = True
+        preferences.spotify_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": token_data.get("expires_in"),
+            "expires_at": expires_at,
+            "token_type": token_data.get("token_type"),
+        }
+
+        # Fetch and store user data
+        try:
+            top_artists = await spotify_service.get_current_user_top_artists(access_token, refresh_token, expires_at)
+            top_tracks = await spotify_service.get_current_user_top_tracks(access_token, refresh_token, expires_at)
+            preferences.top_artists = [artist["name"] for artist in top_artists.get("items", [])]
+            preferences.top_tracks = [track["name"] for track in top_tracks.get("items", [])]
+        except Exception as e:
+            # Log error but don't fail login
+            print(f"Error fetching user data: {e}")
+
+        db.commit()
+
+    # Generate JWT token
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    jwt_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
     return {
-        "message": "Spotify authentication successful",
-        "redirect_url": "syncnsweat://spotify-callback?success=true",
+        "access_token": jwt_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "spotify_connected": True,
+        }
     }

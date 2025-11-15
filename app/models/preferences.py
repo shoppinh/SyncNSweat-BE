@@ -23,6 +23,8 @@ class Preferences(Base):
     # Spotify integration
     spotify_connected = Column(Boolean, default=False)
     spotify_data = Column(JSONB, default={})
+    top_artists = Column(ARRAY(String), default=[])
+    top_tracks = Column(ARRAY(String), default=[])
     
     # Relationship
     profile = relationship("Profile", back_populates="preferences")
