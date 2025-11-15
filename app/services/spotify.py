@@ -1,8 +1,11 @@
 import base64
+from typing import Any, Dict, List, Optional
+
 import requests
-from typing import Dict, List, Optional, Any
+
 from app.core.config import settings
 from app.services.spotify_interceptor import SpotifyInterceptor, SpotifyTokenExpiredException
+
 
 class SpotifyService:
     def __init__(self):
@@ -99,46 +102,49 @@ class SpotifyService:
             "client_id": self.client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
-            "scope": "user-read-private user-read-email user-library-read user-library-modify user-top-read user-read-playback-state user-modify-playback-state playlist-read-private playlist-modify-public playlist-modify-private"
+            "scope": "user-read-private user-read-email user-library-read user-library-modify user-top-read user-read-playback-state user-modify-playback-state playlist-read-private playlist-modify-public playlist-modify-private",
         }
         if state:
             params["state"] = state
-        
-        auth_url = f"{self.auth_url}?" + "&".join([f"{k}={v}" for k, v in params.items()])
+
+        auth_url = f"{self.auth_url}?" + "&".join(
+            [f"{k}={v}" for k, v in params.items()]
+        )
         return auth_url
-    
+
     def get_access_token(self, code: str, redirect_uri: str) -> Dict[str, Any]:
         """
         Exchange authorization code for access token.
         """
-        auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        auth_header = base64.b64encode(
+            f"{self.client_id}:{self.client_secret}".encode()
+        ).decode()
         headers = {
             "Authorization": f"Basic {auth_header}",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
         }
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": redirect_uri
+            "redirect_uri": redirect_uri,
         }
-        
+
         response = requests.post(self.token_url, headers=headers, data=data)
         return response.json()
-    
+
     def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """
         Refresh an access token.
         """
-        auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        auth_header = base64.b64encode(
+            f"{self.client_id}:{self.client_secret}".encode()
+        ).decode()
         headers = {
             "Authorization": f"Basic {auth_header}",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
         }
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token
-        }
-        
+        data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+
         response = requests.post(self.token_url, headers=headers, data=data)
         return response.json()
     
@@ -175,7 +181,7 @@ class SpotifyService:
         refresh_token: Optional[str] = None,
         expires_at: Optional[float] = None,
         description: str = "",
-        public: bool = False
+        public: bool = False,
     ) -> Dict[str, Any]:
         """
         Create a new playlist with automatic token refresh.
@@ -233,7 +239,7 @@ class SpotifyService:
         # Get recommendations based on genres to use as seeds
         params: Dict[str, Any] = {
             "seed_genres": ",".join(selected_genres[:5]),
-            "limit": 2  # Get 2 tracks to use as seeds
+            "limit": 2,  # Get 2 tracks to use as seeds
         }
         
         response_data = self._make_api_call_with_interceptor(
@@ -264,9 +270,13 @@ class SpotifyService:
             "muscle_gain": "Muscle Builder",
             "flexibility": "Flexibility Flow",
         }
-        playlist_name = f"{fitness_names.get(fitness_goal, 'Workout')} for {display_name}"
-        description = f"Custom {fitness_goal.title()} workout playlist created by SyncNSweat"
-        
+        playlist_name = (
+            f"{fitness_names.get(fitness_goal, 'Workout')} for {display_name}"
+        )
+        description = (
+            f"Custom {fitness_goal.title()} workout playlist created by SyncNSweat"
+        )
+
         # Create the playlist
         playlist = await self.create_playlist(
             access_token=access_token,
@@ -277,10 +287,10 @@ class SpotifyService:
             refresh_token=refresh_token,
             expires_at=expires_at
         )
-        
-        if "id" not in playlist:
+
+        if not playlist or "id" not in playlist:
             raise Exception(f"Failed to create playlist: {playlist}")
-        
+
         # Add tracks to the playlist
         result = await self.add_tracks_to_playlist(
             access_token=access_token,
@@ -289,16 +299,18 @@ class SpotifyService:
             refresh_token=refresh_token,
             expires_at=expires_at
         )
-        
-        if "snapshot_id" not in result:
+
+        if not result or "snapshot_id" not in result:
             raise Exception(f"Failed to add tracks to playlist: {result}")
-        
+
         # Return playlist details
         return {
             "id": playlist["id"],
             "name": playlist_name,
-            "external_url": playlist["external_urls"]["spotify"],
-            "image_url": playlist["images"][0]["url"] if playlist.get("images") else None,
+            "external_url": (playlist.get("external_urls") or {}).get("spotify"),
+            "image_url": playlist.get("images")[0]["url"]
+            if playlist.get("images")
+            else None,
         }
 
     async def get_current_user_top_tracks(self, access_token: str, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
