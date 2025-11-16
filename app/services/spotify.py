@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import secrets
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -94,10 +96,13 @@ class SpotifyService:
         return token_response
     
 
+
     def get_auth_url(self, redirect_uri: str, state: Optional[str] = None) -> str:
         """
-        Get the Spotify authorization URL.
+        Get the Spotify authorization URL .
+        Returns (auth_url, code_verifier)
         """
+        
         params = {
             "client_id": self.client_id,
             "response_type": "code",
