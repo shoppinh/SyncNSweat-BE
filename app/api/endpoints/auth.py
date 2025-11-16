@@ -1,5 +1,5 @@
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, logger, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
@@ -96,14 +96,15 @@ def spotify_login():
     """
     spotify_service = SpotifyService()
     redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
-    auth_url= spotify_service.get_auth_url(redirect_uri, state="login")  # Use "login" as state to indicate login flow
+    auth_url = spotify_service.get_auth_url(redirect_uri, state="login")  # Use "login" as state to indicate login flow
     return {"auth_url": auth_url}
 
 
 @router.get("/spotify/callback/")
 async def spotify_callback(
     code: str = Query(None, description="Spotify authorization code"),
-    state: str = Query(None, description="State parameter (user ID)"),
+    state: str = Query(None, description="State parameter indicating flow type (e.g., 'login' or 'connection')"),  
+
     error: str = Query(None, description="Spotify error, if any"),
     db: Session = Depends(get_db),
 ):
@@ -153,6 +154,25 @@ async def spotify_callback(
     if existing_user:
         # User exists, log them in
         user = existing_user
+
+        # Update or create preferences with Spotify data
+        profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+        if profile:
+            preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+            if not preferences:
+                preferences = Preferences(profile_id=profile.id)
+                db.add(preferences)
+                db.commit()
+                db.refresh(preferences)
+
+            preferences.spotify_connected = True
+            preferences.spotify_data = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_in": token_data.get("expires_in"),
+                "expires_at": expires_at,
+                "token_type": token_data.get("token_type"),
+            }
     else:
         # Check if email is already registered
         if email and db.query(User).filter(User.email == email).first():
@@ -169,7 +189,6 @@ async def spotify_callback(
             hashed_password=get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
         )
         db.add(user)
-        db.commit()
         db.refresh(user)
 
         # Create profile
@@ -179,29 +198,16 @@ async def spotify_callback(
         db.refresh(profile)
 
         # Create preferences
-        preferences = Preferences(profile_id=profile.id)
-        db.add(preferences)
-        db.commit()
-        db.refresh(preferences)
-
-    # Update or create preferences with Spotify data
-    profile = db.query(Profile).filter(Profile.user_id == user.id).first()
-    if profile:
-        preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-        if not preferences:
-            preferences = Preferences(profile_id=profile.id)
-            db.add(preferences)
-            db.commit()
-            db.refresh(preferences)
-
-        preferences.spotify_connected = True
-        preferences.spotify_data = {
+        preferences = Preferences(profile_id=profile.id, spotify_connected=True, spotify_data={
             "access_token": access_token,
             "refresh_token": refresh_token,
             "expires_in": token_data.get("expires_in"),
             "expires_at": expires_at,
             "token_type": token_data.get("token_type"),
-        }
+        })
+        db.add(preferences)
+        db.commit()
+        db.refresh(preferences)
 
         # Fetch and store user data
         try:
@@ -212,6 +218,7 @@ async def spotify_callback(
         except Exception as e:
             # Log error but don't fail login
             print(f"Error fetching user data: {e}")
+            logger.logger.error(f"Error fetching Spotify user data: {e}", exc_info=True)
 
         db.commit()
 
@@ -222,7 +229,7 @@ async def spotify_callback(
     )
 
     return {
-        "access_token": jwt_token,
+        "jwt_token": jwt_token,
         "token_type": "bearer",
         "user": {
             "id": user.id,

@@ -68,7 +68,7 @@ class SpotifyService:
         self, code: str, redirect_uri: str
     ) -> Dict[str, Any]:
         """
-        Exchange authorization code for access token using interceptor with PKCE.
+        Exchange authorization code for access token using interceptor.
         
         Returns a dict with access_token, refresh_token, and expires_in
         """
@@ -96,17 +96,10 @@ class SpotifyService:
         return token_response
     
 
-    def _generate_pkce_pair(self) -> tuple[str, str]:
-        """Generate PKCE code verifier and challenge."""
-        code_verifier = secrets.token_urlsafe(32)
-        code_challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        ).decode().rstrip('=')
-        return code_verifier, code_challenge
 
-    def get_auth_url(self, redirect_uri: str, state: Optional[str] = None) -> tuple[str, str]:
+    def get_auth_url(self, redirect_uri: str, state: Optional[str] = None) -> str:
         """
-        Get the Spotify authorization URL with PKCE.
+        Get the Spotify authorization URL .
         Returns (auth_url, code_verifier)
         """
         
