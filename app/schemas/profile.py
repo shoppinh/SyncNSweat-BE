@@ -1,7 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 from app.models.profile import FitnessGoal, FitnessLevel
-from pydantic.alias_generators import to_camel
 
 class ProfileBase(BaseModel):
     
@@ -11,7 +10,7 @@ class ProfileBase(BaseModel):
     available_days: Optional[List[str]] = None
     workout_duration_minutes: Optional[int] = None
     
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True)
     
 
 class ProfileCreate(ProfileBase):

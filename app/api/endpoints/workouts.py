@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import  Any, Dict, List, cast
+from typing import Any, Dict, List, cast, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, selectinload
@@ -33,8 +33,8 @@ router = APIRouter()
 def read_workouts(
     skip: int = 0,
     limit: int = 100,
-    start_date: datetime | None = None,
-    end_date: datetime | None = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -443,7 +443,7 @@ def delete_workout_exercise(
 
 @router.post("/schedule", response_model=ScheduleResponse)
 def generate_workout_schedule(
-    schedule_request: ScheduleRequest | None = None,
+    schedule_request: Optional[ScheduleRequest] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):

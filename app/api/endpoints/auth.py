@@ -189,6 +189,7 @@ async def spotify_callback(
             hashed_password=get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
         )
         db.add(user)
+        db.commit()
         db.refresh(user)
 
         # Create profile

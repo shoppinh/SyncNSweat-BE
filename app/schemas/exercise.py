@@ -1,7 +1,6 @@
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
-from pydantic.alias_generators import to_camel
 
 class ExerciseBase(BaseModel):
     name: str
@@ -23,7 +22,6 @@ class ExerciseSearch(ExerciseBase):
 
 class ExerciseResponse(ExerciseBase):
     id: int
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True,from_attributes=True)
 
 class WorkoutExerciseBase(BaseModel):
     order: int
@@ -42,5 +40,5 @@ class WorkoutExerciseUpdate(BaseModel):
     weights_used: Optional[List[str]] = None
 
 class WorkoutExerciseResponse(WorkoutExerciseBase):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True,from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)
 

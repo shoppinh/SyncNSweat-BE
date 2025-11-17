@@ -20,7 +20,7 @@ COPY . .
 RUN chmod +x entrypoint.sh
 
 # Expose FastAPI port
-EXPOSE 8080
+EXPOSE 8000
 
 # Set environment variables (optional, for production best practice)
 ENV PYTHONUNBUFFERED=1

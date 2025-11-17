@@ -1,6 +1,5 @@
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
-from pydantic.alias_generators import to_camel
 
 class PreferencesBase(BaseModel):
     available_equipment: Optional[List[str]] = None
@@ -20,4 +19,4 @@ class PreferencesResponse(PreferencesBase):
     id: int
     profile_id: int
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True,from_attributes=True)
+    model_config = ConfigDict(populate_by_name=True,from_attributes=True)
