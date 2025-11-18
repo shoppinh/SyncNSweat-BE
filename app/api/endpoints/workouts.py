@@ -75,11 +75,11 @@ async def suggest_workout_schedule(
 
 
     # Instantiate GeminiService directly so we can pass db/current_user
-    gemini_service = GeminiService()
+    gemini_service = GeminiService(db,profile=profile, preferences=preferences)
 
 
     try:
-        ai_plan = await gemini_service.get_workout_and_playlist(profile, preferences)
+        ai_plan = await gemini_service.get_workout_and_playlist()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating AI recommendations: {str(e)}")
 
@@ -202,7 +202,7 @@ def get_today_workout(
         Workout.user_id == current_user.id,
         Workout.date >= datetime.combine(today, datetime.min.time()),
         Workout.date <= datetime.combine(today, datetime.max.time())
-    ).first()
+    ).order_by(Workout.created_at.desc()).first()
 
     if not workout:
         raise HTTPException(

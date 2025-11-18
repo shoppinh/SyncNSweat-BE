@@ -28,7 +28,11 @@ class SpotifyInterceptor:
     and automatic token refresh.
     """
 
-    def __init__(self, refresh_token_callback: Callable[[str], Dict[str, Any]]):
+    def __init__(
+        self,
+        refresh_token_callback: Callable[[str], Dict[str, Any]],
+        persist_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
         """
         Initialize the interceptor.
         
@@ -37,6 +41,11 @@ class SpotifyInterceptor:
                                    a dict with new access_token and optionally expires_in
         """
         self.refresh_token_callback = refresh_token_callback
+        # Optional callback used to persist token data to the application's
+        # storage (for example update user Preferences). This keeps the
+        # interceptor decoupled from the database layer and lets the caller
+        # provide a closure that captures a DB session or service instance.
+        self.persist_callback = persist_callback
         self.token_buffer_seconds = 300
 
     def is_token_expired(self, expires_at: Optional[float] = None) -> bool:
@@ -59,6 +68,16 @@ class SpotifyInterceptor:
             new_access_token = token_data.get("access_token")
             
             if new_access_token:
+                # If the caller provided a persistence callback, call it with
+                # the raw token_data. The callback is responsible for storing
+                # access/refresh tokens and any expiry information.
+                try:
+                    if self.persist_callback:
+                        # allow the callback to raise if persistence fails
+                        self.persist_callback(token_data)
+                except Exception:
+                    logger.exception("Failed to persist refreshed Spotify token")
+
                 logger.info("Successfully refreshed Spotify access token")
                 return new_access_token
             

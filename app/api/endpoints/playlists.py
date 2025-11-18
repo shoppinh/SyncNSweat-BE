@@ -23,7 +23,7 @@ def get_spotify_auth_url(
     """
     Get Spotify authorization URL.
     """
-    spotify_service = SpotifyService()
+    spotify_service = SpotifyService(db)
     redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
     auth_url = spotify_service.get_auth_url(redirect_uri, state=str(current_user.id))
 
@@ -69,7 +69,7 @@ async def get_spotify_recommendations(
 
 
     # Initialize SpotifyService
-    gemini_service = GeminiService()
+    gemini_service = GeminiService(db, profile, preferences)
 
     # Get seed tracks and genres based on preferences and workout type
     # seed_tracks = spotify_service.get_seed_tracks(
@@ -122,9 +122,8 @@ async def get_user_playlists(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
 
-    # Initialize SpotifyService
-    spotify_service = SpotifyService()
-
+    # Initialize SpotifyService with a persistence callback so the
+    # interceptor can save refreshed tokens back to the user's preferences.
     spotify_data = preferences.spotify_data or {}
     access_token = spotify_data.get("access_token")
     if not access_token:
@@ -133,8 +132,22 @@ async def get_user_playlists(
             detail="Spotify access token not found",
         )
 
+    # Build a persistence callback that captures the request DB/session and profile
+    def persist_cb(token_data: Dict[str, Any]):
+        try:
+            preferences_service.update_spotify_tokens(db, profile.id, token_data)
+        except Exception:
+            # Let the interceptor handle/log persistence failures; don't raise here
+            pass
+
+    spotify_service = SpotifyService(
+        access_token=access_token,
+        refresh_token=spotify_data.get("refresh_token", ""),
+        persist_callback=persist_cb,
+    )
+
     try:
-        resp = await spotify_service.get_user_playlists(access_token, limit=50)
+        resp = await spotify_service.get_user_playlists(limit=50)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Spotify API error: {e}")
 

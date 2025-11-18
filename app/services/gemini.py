@@ -1,28 +1,31 @@
 from google import genai
 import json
 from typing import Dict, Any, cast, List, Callable, Optional
+
 from app.core.config import settings
 from app.models.preferences import Preferences
 from app.schemas.preferences import PreferencesResponse
 from app.schemas.profile import ProfileResponse
 from app.models.profile import FitnessLevel, Profile
 from app.services.spotify import SpotifyService
-
+from sqlalchemy.orm import Session
 class GeminiService:
-    def __init__(self):
+    def __init__(self, db:Session, profile: Profile, preferences: Preferences):
         """
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model_name = 'gemini-2.5-flash'
-        self.spotify_service = SpotifyService()  # Assuming you have a SpotifyService class for handling Spotify interactions
+        self.spotify_service = SpotifyService(db, profile, preferences)  
+        self.profile = profile
+        self.preferences = preferences
 
-    async def get_workout_recommendations(self, user_profile: Profile, user_preferences: Preferences) -> Dict[str, Any]:
+    async def get_workout_recommendations(self) -> Dict[str, Any]:
         """
         Generate personalized workout recommendations using the Gemini AI model asynchronously.
         """
         # Determine number of exercises without evaluating SQLAlchemy ColumnElement truthiness
-        val = getattr(user_profile, "fitness_level", None)
+        val = getattr(self.profile, "fitness_level", None)
         if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
             num_exercises = 8
         elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
@@ -32,14 +35,14 @@ class GeminiService:
 
         prompt = f"""
         As a fitness expert, create a personalized workout plan for:
-        - Fitness level: {user_profile.fitness_level if user_profile.fitness_level else 'beginner'}
-        - Fitness goal: {user_profile.fitness_goal if user_profile.fitness_goal else 'general_fitness'}
-        - Available days: {user_profile.available_days if user_profile.available_days else ['Monday', 'Wednesday', 'Friday']}
-        - Workout duration: {user_profile.workout_duration_minutes if user_profile.workout_duration_minutes else 45}
+        - Fitness level: {self.profile.fitness_level if self.profile.fitness_level else 'beginner'}
+        - Fitness goal: {self.profile.fitness_goal if self.profile.fitness_goal else 'general_fitness'}
+        - Available days: {self.profile.available_days if self.profile.available_days else ['Monday', 'Wednesday', 'Friday']}
+        - Workout duration: {self.profile.workout_duration_minutes if self.profile.workout_duration_minutes else 45}
         - Preferences:
-         + Available equipment: {user_preferences.available_equipment if user_preferences.available_equipment else ['dumbbells', 'resistance bands']}
-         + Target muscle groups: {user_preferences.target_muscle_groups if user_preferences.target_muscle_groups else []}
-         + Exercise types: {user_preferences.exercise_types if user_preferences.exercise_types else ['strength', 'cardio']}
+         + Available equipment: {self.preferences.available_equipment if self.preferences.available_equipment else ['dumbbells', 'resistance bands']}
+         + Target muscle groups: {self.preferences.target_muscle_groups if self.preferences.target_muscle_groups else []}
+         + Exercise types: {self.preferences.exercise_types if self.preferences.exercise_types else ['strength', 'cardio']}
          + Number of exercises: {num_exercises}
 
 
@@ -68,15 +71,15 @@ class GeminiService:
                 "spotify_playlist": "default-workout-playlist"
             }
 
-    async def enhance_playlist_parameters(self,  user_preferences: Dict[str, Any]) -> Dict[str, Any]:
+    async def enhance_playlist_parameters(self) -> Dict[str, Any]:
         """
         Generate enhanced music parameters for workouts using the Gemini AI model asynchronously.
         """
         prompt = f"""
         As a fitness music expert, recommend Spotify API parameters for a  workout based on the following user preferences:
-        - User's preferred genres: {user_preferences.get('genres', [])}
-        - Workout intensity: {user_preferences.get('intensity', 'medium')}
-        - Workout duration: {user_preferences.get('duration_minutes', 45)} minutes
+        - User's preferred genres: {self.preferences.get('genres', [])}
+        - Workout intensity: {self.preferences.get('intensity', 'medium')}
+        - Workout duration: {self.preferences.get('duration_minutes', 45)} minutes
 
         Return only a single, valid JSON object with the following keys for the Spotify API:
         - "target_tempo": a number representing the target BPM.
@@ -102,22 +105,31 @@ class GeminiService:
                 "target_danceability": 0.7
             }
 
-    async def recommend_spotify_playlist(self,user_profile: ProfileResponse, user_preferences: PreferencesResponse) -> Dict[str, Any]:
+    async def recommend_spotify_playlist(self) -> Dict[str, Any]:
         # Fetch user's Spotify data
         # This assumes you have the user's Spotify access token stored and refreshed
+        if not self.preferences.spotify_data:
+            return {
+                "message": "Spotify data is not available. Please connect your Spotify account and try again.",
+                "playlist_recommendations": [],
+                "playlist_url": None,
+                "playlist_id": None,
+                "playlist_name": None
+            }
         try:
             # Example: Get user's top tracks
-            top_tracks = await self.spotify_service.get_current_user_top_tracks(user_preferences.spotify_data.get('access_token', ''))
+            top_tracks = await self.spotify_service.get_current_user_top_tracks()
             # I want to check the results
             top_track_names = [track['name'] for track in top_tracks['items']]
 
             # Example: Get user's top artists
-            top_artists = await self.spotify_service.get_current_user_top_artists(user_preferences.spotify_data.get('access_token', ''))
+            top_artists = await self.spotify_service.get_current_user_top_artists()
             top_artist_names = [artist['name'] for artist in top_artists['items']]
 
             # seed_tracks = await self.spotify_service.get_seed_tracks(user_preferences.spotify_data.get('access_token', ''), user_preferences.music_genres)
 
         except (json.JSONDecodeError, AttributeError):
+            # Catch 401 error here
             return {
                 "message": "Error fetching Spotify data. Please ensure your Spotify account is connected and try again.",
                 "playlist_recommendations": [],
@@ -129,11 +141,11 @@ class GeminiService:
         prompt = f"""
         You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences.
         Here's the user's information:
-        - Preferred Genres: {', '.join(user_preferences.music_genres) if user_preferences.music_genres else 'None'}
+        - Preferred Genres: {', '.join(self.preferences.music_genres) if self.preferences.music_genres else 'None'}
         - User's Top Tracks: {', '.join(top_track_names[:5]) if top_track_names else 'None'}
         - User's Top Artists: {', '.join(top_artist_names[:5]) if top_artist_names else 'None'}
 
-        Please suggest 15-20 songs and artists for a Spotify playlist to make sure it lasts within the duration of {user_profile.workout_duration_minutes} minutes. Provide the output in a structured JSON format.
+        Please suggest 15-20 songs and artists for a Spotify playlist to make sure it lasts within the duration of {self.profile.workout_duration_minutes} minutes. Provide the output in a structured JSON format.
         The JSON should have a 'playlist_recommendations' key, which is a list of dicts.
         Each dict should have:
         - 'song_title': (string)
@@ -167,28 +179,28 @@ class GeminiService:
             response_text = response.text.strip().lstrip('```json').rstrip('```').strip()
             playlist_recommendations_json = json.loads(response_text)
             
-            user_spotify_profile = await self.spotify_service.get_user_profile(user_preferences.spotify_data.get('access_token', ''))
+            user_spotify_profile = await self.spotify_service.get_user_profile()
 
 
             # Now, use your SpotifyClient to search for these tracks and potentially create a playlist
             recommended_tracks_uris = []
             for rec in playlist_recommendations_json['playlist_recommendations']:
                 search_query = f"track:{rec['song_title']} artist:{rec['artist_name']}"
-                search_results = await self.spotify_service.search_tracks(user_preferences.spotify_data.get('access_token', ''), search_query)
+                search_results = await self.spotify_service.search_tracks(search_query=search_query)
                 if search_results and search_results['tracks']['items']:
                     recommended_tracks_uris.append(search_results['tracks']['items'][0]['uri'])
 
             if recommended_tracks_uris:
                 # Create a new playlist
-                playlist_genres = ', '.join(user_preferences.music_genres or []) if getattr(user_preferences, 'music_genres', None) else ''
-                fitness_goal_val = getattr(user_profile, 'fitness_goal', None)
+                playlist_genres = ', '.join(self.preferences.music_genres or []) if getattr(self.preferences, 'music_genres', None) else ''
+                fitness_goal_val = getattr(self.profile, 'fitness_goal', None)
                 fitness_goal_str = getattr(fitness_goal_val, 'value', None) or (str(fitness_goal_val) if fitness_goal_val is not None else 'general_fitness')
-                fitness_level_val = getattr(user_profile, 'fitness_level', None)
+                fitness_level_val = getattr(self.profile, 'fitness_level', None)
                 fitness_level_str = getattr(fitness_level_val, 'value', None) or (str(fitness_level_val) if fitness_level_val is not None else 'beginner')
                 playlist_name = f"SyncNSweat - {playlist_genres} {fitness_goal_str}, {fitness_level_str} Playlist"
-                new_playlist = await self.spotify_service.create_playlist(user_preferences.spotify_data.get('access_token', ''), user_spotify_profile.get('id', ''), playlist_name, public=False)
+                new_playlist = await self.spotify_service.create_playlist(user_spotify_profile.get('id', ''), playlist_name, public=False, )
                 if new_playlist:
-                    await self.spotify_service.add_tracks_to_playlist(user_preferences.spotify_data.get('access_token', ''), new_playlist['id'], recommended_tracks_uris)
+                    await self.spotify_service.add_tracks_to_playlist(new_playlist['id'], recommended_tracks_uris)
                     return {"message": "Playlist created and tracks added!", "playlist_url": new_playlist['external_urls']['spotify'], "playlist_id": new_playlist['id'], "playlist_name": new_playlist['name']}
                 else:
                     return {"message": "Could not create Spotify playlist."}
@@ -290,7 +302,7 @@ class GeminiService:
         }
         return out
 
-    async def get_workout_and_playlist(self, user_profile: Profile, user_preferences: Preferences) -> Dict[str, Any]:
+    async def get_workout_and_playlist(self) -> Dict[str, Any]:
         """
         Convenience method that returns both an AI workout plan and a Spotify playlist
         recommendation/create result. Returns a dict with keys "workout_plan" and
@@ -298,12 +310,11 @@ class GeminiService:
         value as a message.
         """
         # Use class helpers to call LLM and normalize results
-        raw_plan = await self._retry_call(self.get_workout_recommendations, user_profile, user_preferences, retries=2)
-        workout_plan = self._normalize_workout(raw_plan, user_profile)
-
+        # raw_plan = await self._retry_call(self.get_workout_recommendations, user_profile, user_preferences, retries=2)
+        # workout_plan = self._normalize_workout(raw_plan, user_profile)
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
-        raw_playlist = await self._retry_call(self.recommend_spotify_playlist, user_profile, user_preferences, retries=2)
+        raw_playlist = await self._retry_call(self.recommend_spotify_playlist, retries=2)
         playlist_result: Dict[str, Any]
         if isinstance(raw_playlist, dict):
             playlist_result = cast(Dict[str, Any], raw_playlist)
@@ -316,4 +327,4 @@ class GeminiService:
                 "playlist_name": None
             }
 
-        return {"workout_plan": workout_plan, "playlist": playlist_result}
+        return {"workout_plan": None, "playlist": playlist_result}
