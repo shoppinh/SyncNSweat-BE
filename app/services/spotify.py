@@ -79,7 +79,6 @@ class SpotifyService:
         self,
         method: str,
         url: str,
-        expires_at: Optional[float] = None,
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
@@ -100,6 +99,8 @@ class SpotifyService:
         Returns:
             Parsed JSON response
         """
+        if self.preferences is None:
+            raise Exception("Preferences are not set; cannot make API call without token data.")
         interceptor = self._create_interceptor()
         try:
             return interceptor.make_request(
@@ -206,24 +207,22 @@ class SpotifyService:
         
         return response.json()
     
-    async def get_user_profile(self, expires_at: Optional[float] = None) -> Dict[str, Any]:
+    async def get_user_profile(self ) -> Dict[str, Any]:
         """
         Get the user's Spotify profile with automatic token refresh.
         """
         return self._make_api_call_with_interceptor(
             method="GET",
             url=f"{self.api_base_url}/me",
-            expires_at=expires_at
         )
     
-    async def get_user_playlists(self,  expires_at: Optional[float] = None, limit: int = 50) -> Dict[str, Any]:
+    async def get_user_playlists(self, limit: int = 50) -> Dict[str, Any]:
         """
         Get the user's playlists with automatic token refresh.
         """
         return self._make_api_call_with_interceptor(
             method="GET",
             url=f"{self.api_base_url}/me/playlists",
-            expires_at=expires_at,
             params={"limit": limit}
         )
     
@@ -231,7 +230,6 @@ class SpotifyService:
         self,
         user_id: str,
         name: str,
-        expires_at: Optional[float] = None,
         description: str = "",
         public: bool = False,
     ) -> Dict[str, Any]:
@@ -241,7 +239,6 @@ class SpotifyService:
         return self._make_api_call_with_interceptor(
             method="POST",
             url=f"{self.api_base_url}/users/{user_id}/playlists",
-            expires_at=expires_at,
             json_data={
                 "name": name,
                 "description": description,
@@ -253,7 +250,6 @@ class SpotifyService:
         self,
         playlist_id: str,
         track_uris: List[str],
-        expires_at: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Add tracks to a playlist with automatic token refresh.
@@ -261,12 +257,10 @@ class SpotifyService:
         return self._make_api_call_with_interceptor(
             method="POST",
             url=f"{self.api_base_url}/playlists/{playlist_id}/tracks",
-            expires_at=expires_at,
             json_data={"uris": track_uris}
         )
     
-    async def get_seed_tracks(self,  genres: List[str], fitness_goal: str,
-                            expires_at: Optional[float] = None) -> List[str]:
+    async def get_seed_tracks(self,  genres: List[str], fitness_goal: str) -> List[str]:
         """Get seed tracks based on genres and fitness goal with automatic token refresh."""
         # Map fitness goals to appropriate genres
         fitness_genres = {
@@ -290,7 +284,6 @@ class SpotifyService:
         response_data = self._make_api_call_with_interceptor(
             method="GET",
             url=f"{self.api_base_url}/recommendations",
-            expires_at=expires_at,
             params=params
         )
             
@@ -300,10 +293,10 @@ class SpotifyService:
 
     async def create_workout_playlist(self,  track_uris: List[str], 
                                     fitness_goal: str, user_id: str, 
-                                    expires_at: Optional[float] = None) -> Dict[str, Any]:
+                                    ) -> Dict[str, Any]:
         """Create a new playlist with the recommended tracks."""
         # Get user profile for display name
-        user_profile = await self.get_user_profile(expires_at)
+        user_profile = await self.get_user_profile()
         display_name = user_profile.get("display_name", "User")
         
         # Create playlist name and description
@@ -325,7 +318,6 @@ class SpotifyService:
             name=playlist_name,
             description=description,
             public=False,  # Keep private by default
-            expires_at=expires_at
         )
 
         if not playlist or "id" not in playlist:
@@ -335,7 +327,6 @@ class SpotifyService:
         result = await self.add_tracks_to_playlist(
             playlist_id=playlist["id"],
             track_uris=track_uris,
-            expires_at=expires_at
         )
 
         if not result or "snapshot_id" not in result:
@@ -351,36 +342,33 @@ class SpotifyService:
             else None,
         }
 
-    async def get_current_user_top_tracks(self, expires_at: Optional[float] = None) -> Dict[str, Any]:
+    async def get_current_user_top_tracks(self) -> Dict[str, Any]:
         """Get the user's top tracks with automatic token refresh."""
         try:
             return self._make_api_call_with_interceptor(
                 method="GET",
                 url=f"{self.api_base_url}/me/top/tracks",
-                expires_at=expires_at
             )
         except Exception:
             return {"items": []}
         
     
     
-    async def get_current_user_top_artists(self, expires_at: Optional[float] = None) -> Dict[str, Any]:
+    async def get_current_user_top_artists(self) -> Dict[str, Any]:
         """Get the user's top artists with automatic token refresh."""
         try:
             return self._make_api_call_with_interceptor(
                 method="GET",
                 url=f"{self.api_base_url}/me/top/artists",
-                expires_at=expires_at
             )
         except Exception:
             return {"items": []}
         
-    async def search_tracks(self, search_query: str, expires_at: Optional[float] = None) -> Dict[str, Any]:
+    async def search_tracks(self, search_query: str) -> Dict[str, Any]:
         """Search for tracks with automatic token refresh."""
         return self._make_api_call_with_interceptor(
             method="GET",
             url=f"{self.api_base_url}/search",
-            expires_at=expires_at,
             params={"q": search_query, "type": "track"}
         )
 

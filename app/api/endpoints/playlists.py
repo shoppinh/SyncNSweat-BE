@@ -1,11 +1,12 @@
+from typing import Any, Dict, List
+
 from app.core.config import settings
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any, cast
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.profile import FitnessGoal, Profile
+from app.models.profile import Profile
 from app.models.preferences import Preferences
 from app.models.workout import Workout
 from app.services.gemini import GeminiService
@@ -54,14 +55,14 @@ async def get_spotify_recommendations(
         )
 
     # Check if Spotify is connected
-    if not preferences.spotify_connected:
+    if not bool(preferences.spotify_connected):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
 
     # Get Spotify access token from preferences
-    spotify_data = preferences.spotify_data
-    if not spotify_data or "access_token" not in spotify_data:
+    spotify_data = preferences.spotify_data or {}
+    if "access_token" not in spotify_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Spotify access token not found",
@@ -79,10 +80,7 @@ async def get_spotify_recommendations(
 
 
     # Get recommendations from Gemini
-    recommendations = await gemini_service.recommend_spotify_playlist(
-        user_profile=profile,
-        user_preferences=preferences,
-    )
+    recommendations = await gemini_service.recommend_spotify_playlist()
 
     # Create a new playlist for the workout
     # playlist = spotify_service.create_workout_playlist(
@@ -92,12 +90,10 @@ async def get_spotify_recommendations(
     # )
 
     return recommendations
-
-
 @router.get("/spotify/playlists")
 async def get_user_playlists(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """
     Get user's Spotify playlists.
     """
@@ -117,7 +113,7 @@ async def get_user_playlists(
         )
 
     # Check if Spotify is connected
-    if not preferences.spotify_connected:
+    if not bool(preferences.spotify_connected):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
@@ -125,37 +121,24 @@ async def get_user_playlists(
     # Initialize SpotifyService with a persistence callback so the
     # interceptor can save refreshed tokens back to the user's preferences.
     spotify_data = preferences.spotify_data or {}
-    access_token = spotify_data.get("access_token")
-    if not access_token:
+    if not spotify_data.get("access_token"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Spotify access token not found",
         )
-
-    # Build a persistence callback that captures the request DB/session and profile
-    def persist_cb(token_data: Dict[str, Any]):
-        try:
-            preferences_service.update_spotify_tokens(db, profile.id, token_data)
-        except Exception:
-            # Let the interceptor handle/log persistence failures; don't raise here
-            pass
-
-    spotify_service = SpotifyService(
-        access_token=access_token,
-        refresh_token=spotify_data.get("refresh_token", ""),
-        persist_callback=persist_cb,
-    )
+    # Provide DB/profile/preferences so the service can refresh & persist tokens
+    spotify_service = SpotifyService(db, profile, preferences)
 
     try:
         resp = await spotify_service.get_user_playlists(limit=50)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Spotify API error: {e}")
 
-    items = resp.get("items") if isinstance(resp, dict) else None
+    items = resp.get("items", []) 
     if not items:
         return {"playlists": []}
 
-    playlists = []
+    playlists: List[Dict[str, Any]] = []
     for p in items:
         playlists.append(
             {
@@ -175,7 +158,7 @@ def get_playlist_for_workout(
     workout_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+) -> Dict[str, Any]:
     """
     Get a playlist for a specific workout.
     """
@@ -207,13 +190,13 @@ def get_playlist_for_workout(
         )
 
     # Check if Spotify is connected
-    if not preferences.spotify_connected:
+    if not bool(preferences.spotify_connected):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
 
     # Check if workout already has a playlist
-    if workout.playlist_id and workout.playlist_name:
+    if workout.playlist_id is not None and workout.playlist_name is not None:
         return {
             "playlist_id": workout.playlist_id,
             "playlist_name": workout.playlist_name,
@@ -222,14 +205,14 @@ def get_playlist_for_workout(
         }
 
     # Get Spotify access token from preferences
-    spotify_data = preferences.spotify_data
-    if not spotify_data or "access_token" not in spotify_data:
+    spotify_data = preferences.spotify_data or {}
+    if "access_token" not in spotify_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Spotify access token not found",
         )
 
-    access_token = spotify_data["access_token"]
+    access_token = spotify_data["access_token"] or ""
 
     # Check if token needs to be refreshed
     if "refresh_token" in spotify_data:
@@ -299,14 +282,14 @@ def refresh_playlist_for_workout(
         )
 
     # Check if Spotify is connected
-    if not preferences.spotify_connected:
+    if not bool(preferences.spotify_connected):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
         )
 
     # Get Spotify access token from preferences
-    spotify_data = preferences.spotify_data
-    if not spotify_data or "access_token" not in spotify_data:
+    spotify_data = preferences.spotify_data or {}
+    if "access_token" not in spotify_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Spotify access token not found",
@@ -322,7 +305,7 @@ def refresh_playlist_for_workout(
 
     # Get the current playlist ID to avoid selecting it again
     recently_used_playlists = []
-    if workout.playlist_id:
+    if workout.playlist_id is not None:
         recently_used_playlists.append(workout.playlist_id)
 
     # Select a new playlist for the workout

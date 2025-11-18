@@ -138,7 +138,7 @@ async def spotify_callback(
     access_token = token_data.get("access_token") or ""
     refresh_token = token_data.get("refresh_token")
     expires_at = token_data.get("expires_at")
-    user_profile = await spotify_service.get_user_profile(expires_at)
+    user_profile = await spotify_service.get_user_profile()
     spotify_user_id = user_profile.get("id")
     email = user_profile.get("email")
 
@@ -212,8 +212,8 @@ async def spotify_callback(
 
         # Fetch and store user data
         try:
-            top_artists = await spotify_service.get_current_user_top_artists(expires_at)
-            top_tracks = await spotify_service.get_current_user_top_tracks(expires_at)
+            top_artists = await spotify_service.get_current_user_top_artists()
+            top_tracks = await spotify_service.get_current_user_top_tracks()
             preferences.top_artists = [artist["name"] for artist in top_artists.get("items", [])]
             preferences.top_tracks = [track["name"] for track in top_tracks.get("items", [])]
         except Exception as e:

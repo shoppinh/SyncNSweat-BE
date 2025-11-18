@@ -35,7 +35,7 @@ class PlaylistSelectorService:
         workout_focus: str,
         music_genres: List[str],
         music_tempo: str,
-        recently_used_playlists: List[str] = None
+        recently_used_playlists: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Select a playlist for a workout based on the workout focus and user preferences.

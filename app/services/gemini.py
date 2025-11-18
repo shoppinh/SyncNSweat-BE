@@ -4,8 +4,6 @@ from typing import Dict, Any, cast, List, Callable, Optional
 
 from app.core.config import settings
 from app.models.preferences import Preferences
-from app.schemas.preferences import PreferencesResponse
-from app.schemas.profile import ProfileResponse
 from app.models.profile import FitnessLevel, Profile
 from app.services.spotify import SpotifyService
 from sqlalchemy.orm import Session
@@ -125,8 +123,6 @@ class GeminiService:
             # Example: Get user's top artists
             top_artists = await self.spotify_service.get_current_user_top_artists()
             top_artist_names = [artist['name'] for artist in top_artists['items']]
-
-            # seed_tracks = await self.spotify_service.get_seed_tracks(user_preferences.spotify_data.get('access_token', ''), user_preferences.music_genres)
 
         except (json.JSONDecodeError, AttributeError):
             # Catch 401 error here
@@ -310,8 +306,8 @@ class GeminiService:
         value as a message.
         """
         # Use class helpers to call LLM and normalize results
-        # raw_plan = await self._retry_call(self.get_workout_recommendations, user_profile, user_preferences, retries=2)
-        # workout_plan = self._normalize_workout(raw_plan, user_profile)
+        raw_plan = await self._retry_call(self.get_workout_recommendations,  retries=2)
+        workout_plan = self._normalize_workout(raw_plan, self.profile)
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
         raw_playlist = await self._retry_call(self.recommend_spotify_playlist, retries=2)
@@ -327,4 +323,4 @@ class GeminiService:
                 "playlist_name": None
             }
 
-        return {"workout_plan": None, "playlist": playlist_result}
+        return {"workout_plan": workout_plan, "playlist": playlist_result}
