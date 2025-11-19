@@ -80,7 +80,7 @@ async def get_spotify_recommendations(
 
 
     # Get recommendations from Gemini
-    recommendations = await gemini_service.recommend_spotify_playlist()
+    recommendations = await gemini_service.get_spotify_playlist_recommendations()
 
     # Create a new playlist for the workout
     # playlist = spotify_service.create_workout_playlist(
@@ -246,7 +246,7 @@ def get_playlist_for_workout(
 
 
 @router.get("/workout/{workout_id}/refresh")
-def refresh_playlist_for_workout(
+async def refresh_playlist_for_workout(
     workout_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -281,53 +281,67 @@ def refresh_playlist_for_workout(
             status_code=status.HTTP_404_NOT_FOUND, detail="Preferences not found"
         )
 
-    # Check if Spotify is connected
-    if not bool(preferences.spotify_connected):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
-        )
-
-    # Get Spotify access token from preferences
+    # Ensure we have an access token available
     spotify_data = preferences.spotify_data or {}
-    if "access_token" not in spotify_data:
+    access_token = spotify_data.get("access_token")
+    if not access_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Spotify access token not found",
         )
 
-    access_token = spotify_data["access_token"]
+    # Try to generate/create a playlist via GeminiService (which may call SpotifyService internally)
+    gemini_service = GeminiService(db, profile, preferences)
+    try:
+        result = await gemini_service.get_spotify_playlist_recommendations()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating playlist: {e}")
 
-    # Check if token needs to be refreshed
-    if "refresh_token" in spotify_data:
-        # In a real implementation, we would check if the token is expired
-        # and refresh it if needed
-        pass
+    # Check for a created playlist in the result
+    playlist_id = result.get("playlist_id") or (result.get("playlist", {}) or {}).get("playlist_id")
+    playlist_name = result.get("playlist_name") or (result.get("playlist", {}) or {}).get("playlist_name")
+    playlist_url = result.get("playlist_url") or (result.get("playlist", {}) or {}).get("playlist_url")
 
-    # Get the current playlist ID to avoid selecting it again
-    recently_used_playlists = []
-    if workout.playlist_id is not None:
-        recently_used_playlists.append(workout.playlist_id)
+    if playlist_id and playlist_name:
+        workout.playlist_id = playlist_id
+        workout.playlist_name = playlist_name
+        db.add(workout)
+        db.commit()
+        return {
+            "playlist_id": playlist_id,
+            "playlist_name": playlist_name,
+            "external_url": playlist_url or f"https://open.spotify.com/playlist/{playlist_id}",
+            "message": "Selected new playlist for workout",
+        }
 
-    # Select a new playlist for the workout
-    playlist_selector = PlaylistSelectorService()
-    playlist = playlist_selector.select_playlist_for_workout(
-        access_token=access_token,
-        workout_focus=workout.focus,
-        music_genres=preferences.music_genres,
-        music_tempo=preferences.music_tempo,
-        recently_used_playlists=recently_used_playlists,
-    )
-
-    # Update the workout with the new playlist info
-    workout.playlist_id = playlist["id"]
-    workout.playlist_name = playlist["name"]
-    db.add(workout)
-    db.commit()
-
+        
     return {
-        "playlist_id": playlist["id"],
-        "playlist_name": playlist["name"],
-        "external_url": playlist["external_url"],
-        "image_url": playlist["image_url"],
-        "message": "Selected new playlist for workout",
+        "playlist_id": None,
+        "playlist_name": None,
+        "external_url": None,
+        "message": "Failed to generate playlist via GeminiService",
     }
+
+    # Fallback: use local playlist selector (requires the access token)
+    # playlist_selector = PlaylistSelectorService()
+    # recently_used_playlists = [workout.playlist_id] if workout.playlist_id else []
+    # playlist = playlist_selector.select_playlist_for_workout(
+    #     access_token=access_token,
+    #     workout_focus=workout.focus,
+    #     music_genres=preferences.music_genres,
+    #     music_tempo=preferences.music_tempo,
+    #     recently_used_playlists=recently_used_playlists,
+    # )
+
+    # workout.playlist_id = playlist["id"]
+    # workout.playlist_name = playlist["name"]
+    # db.add(workout)
+    # db.commit()
+
+    # return {
+    #     "playlist_id": playlist["id"],
+    #     "playlist_name": playlist["name"],
+    #     "external_url": playlist["external_url"],
+    #     "image_url": playlist["image_url"],
+    #     "message": "Selected new playlist for workout (fallback selector)",
+    # }

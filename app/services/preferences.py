@@ -33,13 +33,33 @@ class PreferencesService:
             self.db.add(preferences)
 
         preferences.spotify_connected = True
-        # Store token-related info in spotify_data column (JSON / Text column supported by model)
-        preferences.spotify_data = {
-            "access_token": token_data.get("access_token"),
-            "refresh_token": token_data.get("refresh_token"),
-            "expires_in": token_data.get("expires_in"),
-            "token_type": token_data.get("token_type"),
-        }
+        # Merge token-related info into spotify_data but only overwrite when
+        # the provided value is not None. This preserves existing values when
+        # a refresh response doesn't include every field.
+        current: Dict[str, Any] = preferences.spotify_data or {}
+
+        # Explicitly update fields only when provided (not None)
+        if token_data.get("access_token") is not None:
+            current["access_token"] = token_data.get("access_token")
+        if token_data.get("refresh_token") is not None:
+            current["refresh_token"] = token_data.get("refresh_token")
+        if token_data.get("expires_in") is not None:
+            current["expires_in"] = token_data.get("expires_in")
+            # compute expires_at for convenience if expires_in provided
+            try:
+                import time
+
+                current["expires_at"] = time.time() + float(token_data.get("expires_in"))
+            except Exception:
+                # If computation fails, don't set expires_at
+                pass
+        if token_data.get("token_type") is not None:
+            current["token_type"] = token_data.get("token_type")
+        if token_data.get("expires_at") is not None:
+            # allow callers to explicitly set expires_at (e.g., interceptor)
+            current["expires_at"] = token_data.get("expires_at")
+
+        preferences.spotify_data = current
 
         # Optionally compute expires_at using current time + expires_in here if desired
         self.db.add(preferences)

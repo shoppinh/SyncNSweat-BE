@@ -13,7 +13,7 @@ class GeminiService:
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = 'gemini-2.5-flash'
+        self.model_name = 'gemini-2.5-flash-lite'
         self.spotify_service = SpotifyService(db, profile, preferences)  
         self.profile = profile
         self.preferences = preferences
@@ -51,11 +51,22 @@ class GeminiService:
         - "notes": a string containing any specific form or safety tips.
         """
         
-
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=prompt
-        )
+        
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+        except Exception as e:
+            print(f"Error generating AI response for workout recommendations.{e}")
+            return {
+                "exercises": [],
+                "intensity": 5,
+                "duration": 45,
+                "notes": "Error generating AI response. Please try again.",
+                "spotify_playlist": "default-workout-playlist"
+            }
+            
         try:
             # Clean up potential markdown formatting from the response
             cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
@@ -69,41 +80,7 @@ class GeminiService:
                 "spotify_playlist": "default-workout-playlist"
             }
 
-    async def enhance_playlist_parameters(self) -> Dict[str, Any]:
-        """
-        Generate enhanced music parameters for workouts using the Gemini AI model asynchronously.
-        """
-        prompt = f"""
-        As a fitness music expert, recommend Spotify API parameters for a  workout based on the following user preferences:
-        - User's preferred genres: {self.preferences.get('genres', [])}
-        - Workout intensity: {self.preferences.get('intensity', 'medium')}
-        - Workout duration: {self.preferences.get('duration_minutes', 45)} minutes
-
-        Return only a single, valid JSON object with the following keys for the Spotify API:
-        - "target_tempo": a number representing the target BPM.
-        - "target_energy": a float between 0.0 and 1.0.
-        - "target_valence": a float between 0.0 and 1.0.
-        - "target_danceability": a float between 0.0 and 1.0.
-        """
-
-        response = await self.client.aio.models.generate_content(
-            model=self.model_name,
-            contents=prompt
-        )
-        try:
-            # Clean up potential markdown formatting from the response
-            cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
-
-            return json.loads(cleaned_response)
-        except (json.JSONDecodeError, AttributeError):
-            return {
-                "target_tempo": 128,
-                "target_energy": 0.8,
-                "target_valence": 0.7,
-                "target_danceability": 0.7
-            }
-
-    async def recommend_spotify_playlist(self) -> Dict[str, Any]:
+    async def get_spotify_playlist_recommendations(self) -> Dict[str, Any]:
         # Fetch user's Spotify data
         # This assumes you have the user's Spotify access token stored and refreshed
         if not self.preferences.spotify_data:
@@ -203,7 +180,8 @@ class GeminiService:
             else:
                 return {"message": "No tracks found for the recommendations."}
 
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, AttributeError) as e:
+            print(f"Error processing playlist recommendations: {e}")
             return {
                 "message": "Error processing playlist recommendations. Please try again.",
                 "playlist_recommendations": [],
@@ -306,14 +284,14 @@ class GeminiService:
         value as a message.
         """
         # Use class helpers to call LLM and normalize results
-        raw_plan = await self._retry_call(self.get_workout_recommendations,  retries=2)
+        raw_plan = await self.get_workout_recommendations() 
         workout_plan = self._normalize_workout(raw_plan, self.profile)
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
-        raw_playlist = await self._retry_call(self.recommend_spotify_playlist, retries=2)
+        raw_playlist = await self.get_spotify_playlist_recommendations()
         playlist_result: Dict[str, Any]
-        if isinstance(raw_playlist, dict):
-            playlist_result = cast(Dict[str, Any], raw_playlist)
+        if raw_playlist is not None:
+            playlist_result = raw_playlist
         else:
             playlist_result = {
                 "message": "Unable to generate playlist from LLM/Spotify.",
@@ -324,3 +302,22 @@ class GeminiService:
             }
 
         return {"workout_plan": workout_plan, "playlist": playlist_result}
+
+    async def refresh_workout_playlist(self) -> Dict[str, Any]:
+        """
+        Method to refresh Spotify playlist recommendations.
+        This can be used when user wants to regenerate their workout playlist.
+        """
+
+        # Fetch user's Spotify data
+        # This assumes you have the user's Spotify access token stored and refreshed
+        if not self.preferences.spotify_data:
+            return {
+                "message": "Spotify data is not available. Please connect your Spotify account and try again.",
+                "playlist_recommendations": [],
+                "playlist_url": None,
+                "playlist_id": None,
+                "playlist_name": None
+            }
+
+        

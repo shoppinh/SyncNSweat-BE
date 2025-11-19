@@ -138,7 +138,7 @@ async def spotify_callback(
     access_token = token_data.get("access_token") or ""
     refresh_token = token_data.get("refresh_token")
     expires_at = token_data.get("expires_at")
-    user_profile = await spotify_service.get_user_profile()
+    user_profile = await spotify_service.get_user_profile(access_token,refresh_token,expires_at)
     spotify_user_id = user_profile.get("id")
     email = user_profile.get("email")
 
@@ -173,13 +173,50 @@ async def spotify_callback(
                 "expires_at": expires_at,
                 "token_type": token_data.get("token_type"),
             }
+
+            db.commit()
+            db.refresh(preferences)
     else:
         # Check if email is already registered
-        if email and db.query(User).filter(User.email == email).first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered. Please login with email/password and connect Spotify.",
+        user = db.query(User).filter(User.email == email).first()
+        if email and user is not None:
+            # Update existing user to link Spotify account
+            # get the preferences associated with this user
+            profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+            if not profile:
+                profile = Profile(user_id=user.id, name=user_profile.get("display_name", ""))
+                db.add(profile)
+                db.commit()
+                db.refresh(profile)
+            preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+            if not preferences:
+                preferences = Preferences(profile_id=profile.id, )
+                db.add(preferences)
+                db.commit()
+                db.refresh(preferences)
+            preferences.spotify_connected = True
+            preferences.spotify_data = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_in": token_data.get("expires_in"),
+                "expires_at": expires_at,
+                "token_type": token_data.get("token_type"),
+            }
+            db.commit()
+            db.refresh(preferences)
+            access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+            jwt_token = create_access_token(
+                data={"sub": user.email}, expires_delta=access_token_expires
             )
+            return {
+                "jwt_token": jwt_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "spotify_connected": True,
+                }
+            }
 
         # Create new user
         user = User(

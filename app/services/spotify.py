@@ -82,6 +82,9 @@ class SpotifyService:
         params: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Make an API call using the interceptor for automatic token handling.
@@ -99,16 +102,20 @@ class SpotifyService:
         Returns:
             Parsed JSON response
         """
-        if self.preferences is None:
-            raise Exception("Preferences are not set; cannot make API call without token data.")
+        
         interceptor = self._create_interceptor()
+        input_access_token = access_token or (self.preferences.spotify_data.get("access_token") if self.preferences else None) 
+        input_refresh_token = refresh_token or (self.preferences.spotify_data.get("refresh_token") if self.preferences else None)
+        input_expires_at = expires_at or (self.preferences.spotify_data.get("expires_at") if self.preferences else None)
+        if not input_access_token:
+            raise Exception("Access token is required for API call")
         try:
             return interceptor.make_request(
                 method=method,
                 url=url,
-                access_token=self.preferences.spotify_data.get("access_token", ""),
-                refresh_token=self.preferences.spotify_data.get("refresh_token", ""),
-                expires_at=self.preferences.spotify_data.get("expires_at", None),
+                access_token=input_access_token,
+                refresh_token=input_refresh_token,
+                expires_at=input_expires_at,
                 params=params,
                 data=data,
                 json_data=json_data,
@@ -207,13 +214,16 @@ class SpotifyService:
         
         return response.json()
     
-    async def get_user_profile(self ) -> Dict[str, Any]:
+    async def get_user_profile(self, access_token: Optional[str] = None, refresh_token: Optional[str] = None, expires_at: Optional[float] = None) -> Dict[str, Any]:
         """
         Get the user's Spotify profile with automatic token refresh.
         """
         return self._make_api_call_with_interceptor(
             method="GET",
             url=f"{self.api_base_url}/me",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
         )
     
     async def get_user_playlists(self, limit: int = 50) -> Dict[str, Any]:
