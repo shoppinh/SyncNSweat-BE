@@ -1,92 +1,79 @@
-# This workflow build and push a Docker container to Google Artifact Registry
-# and deploy it on Cloud Run when a commit is pushed to the "main"
-# branch.
-#
-# To configure this workflow:
-#
-# 1. Enable the following Google Cloud APIs:
-#
-#    - Artifact Registry (artifactregistry.googleapis.com)
-#    - Cloud Run (run.googleapis.com)
-#    - IAM Credentials API (iamcredentials.googleapis.com)
-#
-#    You can learn more about enabling APIs at
-#    https://support.google.com/googleapi/answer/6158841.
-#
-# 2. Create and configure a Workload Identity Provider for GitHub:
-#    https://github.com/google-github-actions/auth#preferred-direct-workload-identity-federation.
-#
-#    Depending on how you authenticate, you will need to grant an IAM principal
-#    permissions on Google Cloud:
-#
-#    - Artifact Registry Administrator (roles/artifactregistry.admin)
-#    - Cloud Run Developer (roles/run.developer)
-#
-#    You can learn more about setting IAM permissions at
-#    https://cloud.google.com/iam/docs/manage-access-other-resources
-#
-# 3. Change the values in the "env" block to match your values.
-
-name: 'Build and Deploy to Cloud Run'
+name: "Build and Deploy to Cloud Run"
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
-  PROJECT_ID: '${{ secrets.GCP_PROJECT_ID }}' # TODO: update to your Google Cloud project ID
-  REGION: '${{ secrets.GCP_REGION }}' # TODO: update to your region
-  SERVICE_NAME: '${{ secrets.GCP_SERVICE_NAME }}' # TODO: update to your service name
-  SERVICE_REGISTRY: '${{ secrets.GCP_SERVICE_REGISTRY }}'
+  PROJECT_ID: "${{ secrets.GCP_PROJECT_ID }}" # TODO: update to your Google Cloud project ID
+  REGION: "${{ secrets.GCP_REGION }}" # TODO: update to your region
+  SERVICE_NAME: "${{ secrets.GCP_SERVICE_NAME }}" # TODO: update to your service name
+  SERVICE_REGISTRY: "${{ secrets.GCP_SERVICE_REGISTRY }}"
+  CLOUD_SQL_INSTANCE_ID: "${{ secrets.GCP_CLOUD_SQL_INSTANCE_ID }}"
 
 jobs:
   deploy:
-    runs-on: 'ubuntu-latest'
+    runs-on: "ubuntu-latest"
 
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: "read"
+      id-token: "write"
 
     steps:
-      - name: 'Checkout'
-        uses: 'actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332' # actions/checkout@v4
+      - name: "Checkout"
+        uses: "actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332" # actions/checkout@v4
 
       # Configure Workload Identity Federation and generate an access token.
       #
       # See https://github.com/google-github-actions/auth for more options,
       # including authenticating via a JSON credentials file.
-      - id: 'auth'
-        name: 'Authenticate to Google Cloud'
-        uses: 'google-github-actions/auth@f112390a2df9932162083945e46d439060d66ec2' # google-github-actions/auth@v2
+      - id: "auth"
+        name: "Authenticate to Google Cloud"
+        uses: "google-github-actions/auth@v2"
         with:
-          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+          # REMOVED: credentials_json
+          # ADDED: The following two lines
+          workload_identity_provider: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          service_account: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
 
       # BEGIN - Docker auth and build
       #
       # If you already have a container image, you can omit these steps.
-      - name: 'Docker Auth'
+      - name: "Docker Auth"
         run: |-
           gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev"
 
-      - name: 'Build and Push Container'
+      - name: "Build and Push Container"
         run: |-
           DOCKER_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME}}:${{ github.sha }}"
           docker build --tag "${DOCKER_TAG}" .
           docker push "${DOCKER_TAG}"
-      - name: 'Deploy to Cloud Run'
-
-        # END - Docker auth and build
-
-        uses: 'google-github-actions/deploy-cloudrun@33553064113a37d688aa6937bacbdc481580be17' # google-github-actions/deploy-cloudrun@v2
+      # END - Docker auth and build
+      - name: "Deploy to Cloud Run"
+        uses: "google-github-actions/deploy-cloudrun@v2"
         with:
-          service: '${{ env.SERVICE_NAME }}'
-          region: '${{ env.REGION }}'
+          service: "${{ env.SERVICE_NAME }}"
+          region: "${{ env.REGION }}"
           # NOTE: If using a pre-built image, update the image name below:
-
-          image: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME}}:${{ github.sha }}'
+          image: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME}}:${{ github.sha }}"
+          flags: |
+            --port=8000
+            --add-cloudsql-instances=${{ env.PROJECT_ID }}:${{ env.REGION }}:${{ env.CLOUD_SQL_INSTANCE_ID }}
+            --service-account="${{ secrets.GCP_SERVICE_ACCOUNT }}"
+          secrets: |
+            DATABASE_URI=DATABASE_URI:latest
+            SECRET_KEY=SECRET_KEY:latest
+            SPOTIFY_CLIENT_ID=SPOTIFY_CLIENT_ID:latest
+            SPOTIFY_CLIENT_SECRET=SPOTIFY_CLIENT_SECRET:latest
+            SPOTIFY_REDIRECT_URL=SPOTIFY_REDIRECT_URL:latest
+            EXERCISE_API_KEY=EXERCISE_API_KEY:latest
+            EXERCISE_API_HOST=EXERCISE_API_HOST:latest
+            API_URL=API_URL:latest
+            GEMINI_API_KEY=GEMINI_API_KEY:latest
+            DEFAULT_SPOTIFY_USER_PASSWORD=DEFAULT_SPOTIFY_USER_PASSWORD:latest
       # If required, use the Cloud Run URL output in later steps
-      - name: 'Show output'
+      - name: "Show output"
         run: |2-
 
           echo ${{ steps.deploy.outputs.url }}
