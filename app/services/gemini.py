@@ -1,10 +1,11 @@
 from google import genai
 import json
-from typing import Dict, Any, cast, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, cast
 
 from app.core.config import settings
 from app.models.preferences import Preferences
 from app.models.profile import FitnessLevel, Profile
+from app.models.workout import Exercise
 from app.services.spotify import SpotifyService
 from sqlalchemy.orm import Session
 class GeminiService:
@@ -148,6 +149,12 @@ class GeminiService:
             contents=prompt
         )
             
+            if response.text is None:
+                return {
+                    "message": "Error generating playlist recommendations. Please try again.",
+                    "playlist_recommendations": [],
+                    "playlist_url": None
+                }
             
             response_text = response.text.strip().lstrip('```json').rstrip('```').strip()
             playlist_recommendations_json = json.loads(response_text)
@@ -156,7 +163,7 @@ class GeminiService:
 
 
             # Now, use your SpotifyClient to search for these tracks and potentially create a playlist
-            recommended_tracks_uris = []
+            recommended_tracks_uris:List[str] = []
             for rec in playlist_recommendations_json['playlist_recommendations']:
                 search_query = f"track:{rec['song_title']} artist:{rec['artist_name']}"
                 search_results = await self.spotify_service.search_tracks(search_query=search_query)
@@ -165,7 +172,7 @@ class GeminiService:
 
             if recommended_tracks_uris:
                 # Create a new playlist
-                playlist_genres = ', '.join(self.preferences.music_genres or []) if getattr(self.preferences, 'music_genres', None) else ''
+                playlist_genres = ', '.join(cast(List[str], self.preferences.music_genres or [])) if getattr(self.preferences, 'music_genres', None) else ''
                 fitness_goal_val = getattr(self.profile, 'fitness_goal', None)
                 fitness_goal_str = getattr(fitness_goal_val, 'value', None) or (str(fitness_goal_val) if fitness_goal_val is not None else 'general_fitness')
                 fitness_level_val = getattr(self.profile, 'fitness_level', None)
@@ -319,5 +326,39 @@ class GeminiService:
                 "playlist_id": None,
                 "playlist_name": None
             }
+    
+    async def get_exercise_swap(self,current_exercise: Exercise,target_muscle_groups: List[str],fitness_level: str, available_equipment: List[str], recently_used_exercise_names: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        Generate an alternative exercise targeting the same muscle group.
+        """
+        prompt = f"""
+        Suggest an alternative exercise to '{current_exercise.name}' that targets the '{','.join(target_muscle_groups) if target_muscle_groups else 'general'}' muscle group. The alternative exercise should match the user's fitness level '{fitness_level}' and utilize the available equipment: {', '.join(available_equipment) if available_equipment else 'bodyweight only'}. Avoid suggesting exercises that the user has recently performed: {', '.join(recently_used_exercise_names) if recently_used_exercise_names else 'none'}.
+        Provide the response in JSON format with the following keys:
+        - "name": Name of the alternative exercise
+        - "body_part": Primary body part targeted
+        - "target": Target muscle group
+        - "equipment": Equipment needed
+        - "gif_url": URL to a demonstration GIF (if available)
+        - "instructions": List of step-by-step instructions
+        """
+
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+        except Exception as e:
+            print(f"Error generating AI response for exercise swap: {e}")
+            return None
+
+        try:
+            if response.text is None:
+                return None
+            cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
+            exercise_data = json.loads(cleaned_response)
+            normalized_exercise = self._normalize_exercise(exercise_data)
+            return normalized_exercise
+        except (json.JSONDecodeError, AttributeError):
+            return None
 
         

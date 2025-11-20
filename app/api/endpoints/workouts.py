@@ -15,7 +15,7 @@ from app.schemas.exercise import (WorkoutExerciseCreate,
                                   WorkoutExerciseUpdate)
 from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
                                  WorkoutCreate, WorkoutResponse,
-                                 WorkoutSuggest, WorkoutUpdate)
+                                  WorkoutUpdate)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.scheduler import SchedulerService
@@ -536,7 +536,7 @@ def generate_workout_schedule(
     )
 
 @router.post("/{workout_id}/exercises/{exercise_id}/swap", response_model=WorkoutExerciseResponse)
-def swap_workout_exercise(
+async def swap_workout_exercise(
     workout_id: int,
     exercise_id: int,
     current_user: User = Depends(get_current_user),
@@ -558,12 +558,12 @@ def swap_workout_exercise(
         )
 
     # Get the exercise
-    exercise = db.query(WorkoutExercise).filter(
-        WorkoutExercise.id == exercise_id,
+    workout_exercise = db.query(WorkoutExercise).filter(
+        WorkoutExercise.exercise_id == exercise_id,
         WorkoutExercise.workout_id == workout_id
     ).first()
 
-    if not exercise:
+    if not workout_exercise:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=EXERCISE_NOT_FOUND
@@ -589,35 +589,91 @@ def swap_workout_exercise(
         WorkoutExercise.workout_id == workout_id
     ).all()
 
-    recently_used_exercises = [ex.exercise_id for ex in workout_exercises if ex.id != exercise_id]
+    recently_used_exercises_name = [ex.exercise.name for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
+    recently_used_exercise_ids = [ex.exercise.id for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
+    
+    # Will use GeminiService to get suggestions to replace the exercise
+    gemini_service = GeminiService(db,profile, preferences)
+    try:
+        new_exercise_data = await gemini_service.get_exercise_swap(
+            current_exercise=workout_exercise.exercise,
+            fitness_level=profile.fitness_level.value,
+            target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
+            available_equipment=cast(List[str], preferences.available_equipment),
+            recently_used_exercise_names=cast(List[str],recently_used_exercises_name)
+        )
+    except Exception as e:
+        print(f"Error getting exercise swap from Gemini: {e}")
+        new_exercise_data = None
+    if new_exercise_data:
+        # Update the exercise with the new data from Gemini
+        # Find the exercise in the database by name
+        new_exercise = db.query(Exercise).filter(Exercise.name == new_exercise_data["name"]).first()
+        if not new_exercise:
+            new_exercise = Exercise(
+                name=new_exercise_data["name"],
+                target=new_exercise_data.get("target", "General"),
+                body_part=new_exercise_data.get("body_part", "General"),
+                equipment=new_exercise_data.get("equipment"),
+                instructions=new_exercise_data.get("instructions"),
+            )
+            db.add(new_exercise)
+            db.flush()
+            # Update workout exercise to point to the new exercise
+            workout_exercise.exercise_id = new_exercise.id
+            workout_exercise.exercise = new_exercise
+            workout_exercise.sets = new_exercise_data["sets"]
+            workout_exercise.reps = new_exercise_data["reps"]
+            workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
+            setattr(workout_exercise, "completed_sets", 0)
+            setattr(workout_exercise, "weights_used", [])
+            db.add(workout_exercise)
+            db.commit()
+            db.refresh(workout_exercise)
+            return workout_exercise
+        # Update workout exercise to point to the existing exercise
+        workout_exercise.exercise_id = new_exercise.id
+        workout_exercise.exercise = new_exercise
+        workout_exercise.sets = new_exercise_data["sets"]
+        workout_exercise.reps = new_exercise_data["reps"]
+        workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
+        setattr(workout_exercise, "completed_sets", 0)
+        setattr(workout_exercise, "weights_used", [])
+        db.add(workout_exercise)
+        db.commit()
+        db.refresh(workout_exercise)
 
+        return workout_exercise
+    else:
+        print("Gemini service did not return a swap exercise, falling back to ExerciseSelectorService.")
+        
+    # Fallback to ExerciseSelectorService if Gemini is not available
     # Use the exercise selector service to find a replacement
-    exercise_selector = ExerciseSelectorService(db)
-    new_exercise_data = exercise_selector.swap_exercise(
-        exercise_id=cast(int, exercise.exercise_id),
-        muscle_group=exercise.muscle_group,
-        equipment=exercise.equipment,
-        fitness_level=profile.fitness_level.value,
-        available_equipment=cast(List[str], preferences.available_equipment),
-        recently_used_exercises=cast(List[int],recently_used_exercises)
-    )
+        exercise_selector = ExerciseSelectorService(db)
+        new_exercise_data = exercise_selector.swap_exercise(
+            exercise_id=cast(int, workout_exercise.exercise_id),
+            muscle_group=workout_exercise.muscle_group,
+            equipment=workout_exercise.equipment,
+            fitness_level=profile.fitness_level.value,
+            available_equipment=cast(List[str], preferences.available_equipment),
+            recently_used_exercises=cast(List[int],recently_used_exercise_ids)
+        )
 
-    # Update the exercise with the new data
-    exercise.exercise_id = new_exercise_data["exercise_id"]
-    exercise.name = new_exercise_data["name"]
-    exercise.description = new_exercise_data["description"]
-    exercise.muscle_group = new_exercise_data["muscle_group"]
-    exercise.equipment = new_exercise_data["equipment"]
-    exercise.sets = new_exercise_data["sets"]
-    exercise.reps = new_exercise_data["reps"]
-    exercise.rest_seconds = new_exercise_data["rest_seconds"]
-    setattr(exercise, "completed_sets", 0)
-    setattr(exercise, "weights_used", [])
+        # Update the exercise with the new data
+        workout_exercise.exercise_id = new_exercise_data["exercise_id"]
+        workout_exercise.name = new_exercise_data["name"]
+        workout_exercise.description = new_exercise_data["description"]
+        workout_exercise.muscle_group = new_exercise_data["muscle_group"]
+        workout_exercise.equipment = new_exercise_data["equipment"]
+        workout_exercise.sets = new_exercise_data["sets"]
+        workout_exercise.reps = new_exercise_data["reps"]
+        workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
+        setattr(workout_exercise, "completed_sets", 0)
+        setattr(workout_exercise, "weights_used", [])
 
-    db.add(exercise)
-    db.commit()
-    db.refresh(exercise)
-
-    return exercise
+        db.add(workout_exercise)
+        db.commit()
+        db.refresh(workout_exercise)
+        return workout_exercise
 
 
