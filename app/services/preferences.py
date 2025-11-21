@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.profile import Profile
 from app.models.preferences import Preferences
@@ -60,6 +61,9 @@ class PreferencesService:
             current["expires_at"] = token_data.get("expires_at")
 
         preferences.spotify_data = current
+
+        # Mark the JSONB column as modified so SQLAlchemy tracks the change
+        flag_modified(preferences, "spotify_data")
 
         # Optionally compute expires_at using current time + expires_in here if desired
         self.db.add(preferences)

@@ -233,6 +233,7 @@ def get_playlist_for_workout(
     # Update the workout with the playlist info
     workout.playlist_id = playlist["id"]
     workout.playlist_name = playlist["name"]
+    workout.playlist_url = playlist["external_url"]
     db.add(workout)
     db.commit()
 
@@ -302,15 +303,16 @@ async def refresh_playlist_for_workout(
     playlist_name = result.get("playlist_name") or (result.get("playlist", {}) or {}).get("playlist_name")
     playlist_url = result.get("playlist_url") or (result.get("playlist", {}) or {}).get("playlist_url")
 
-    if playlist_id and playlist_name:
+    if playlist_id and playlist_name and playlist_url:
         workout.playlist_id = playlist_id
         workout.playlist_name = playlist_name
+        workout.playlist_url = playlist_url
         db.add(workout)
         db.commit()
         return {
             "playlist_id": playlist_id,
             "playlist_name": playlist_name,
-            "external_url": playlist_url or f"https://open.spotify.com/playlist/{playlist_id}",
+            "external_url": playlist_url,
             "message": "Selected new playlist for workout",
         }
 
