@@ -116,15 +116,14 @@ class GeminiService:
         You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences.
         Here's the user's information:
         - Preferred Genres: {', '.join(self.preferences.music_genres) if self.preferences.music_genres else 'None'}
-        - User's Top Tracks: {', '.join(top_track_names[:5]) if top_track_names else 'None'}
-        - User's Top Artists: {', '.join(top_artist_names[:5]) if top_artist_names else 'None'}
+        - User's Top Tracks: {', '.join(top_track_names[:10]) if top_track_names else 'None'}
+        - User's Top Artists: {', '.join(top_artist_names[:10]) if top_artist_names else 'None'}
 
-        Please suggest 15-20 songs and artists for a Spotify playlist to make sure it lasts within the duration of {self.profile.workout_duration_minutes} minutes. Provide the output in a structured JSON format.
+        Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {self.profile.workout_duration_minutes} minutes. Provide the output in a structured JSON format.
         The JSON should have a 'playlist_recommendations' key, which is a list of dicts.
         Each dict should have:
         - 'song_title': (string)
         - 'artist_name': (string)
-        - 'reason': (string) A very brief reason for the recommendation (1-2 sentences).
 
         Example JSON structure:
         {{
@@ -132,12 +131,10 @@ class GeminiService:
                 {{
                     "song_title": "Blinding Lights",
                     "artist_name": "The Weeknd",
-                    "reason": "Upbeat and energetic, perfect for a high-intensity workout."
                 }},
                 {{
                     "song_title": "Levitating",
                     "artist_name": "Dua Lipa",
-                    "reason": "Catchy and motivating, great for keeping the energy high."
                 }}
             ]
         }}
