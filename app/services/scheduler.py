@@ -1,5 +1,4 @@
-import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from app.services.exercise import ExerciseService
 from sqlalchemy.orm import Session
@@ -63,13 +62,13 @@ class SchedulerService:
         workout_split = self._determine_workout_split(available_days, fitness_goal)
         
         # Generate workouts for each available day
-        workouts = []
+        workouts: list[Dict[str, Any]] = []
         for i, day in enumerate(available_days):
             focus = workout_split[i % len(workout_split)]
             workout_date = day_map[day]
             
             # Create workout
-            workout = {
+            workout: Dict[str, Any] = {
                 "user_id": user_id,
                 "date": datetime.combine(workout_date, datetime.min.time()),
                 "focus": focus,

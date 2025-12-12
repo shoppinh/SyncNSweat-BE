@@ -1,3 +1,4 @@
+from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -21,7 +22,7 @@ def read_profile_me(
     """
     Get current user's profile.
     """
-    profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -40,7 +41,7 @@ def create_profile(
     Create a new profile for the current user.
     """
     # Check if user already has a profile
-    db_profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    db_profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if db_profile:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -48,14 +49,14 @@ def create_profile(
         )
     
     # Create new profile via service
-    profile_data = {
+    profile_data: Dict[str, Any] = {
         "name": profile_in.name,
         "fitness_goal": profile_in.fitness_goal,
         "fitness_level": profile_in.fitness_level,
         "available_days": profile_in.available_days,
         "workout_duration_minutes": profile_in.workout_duration_minutes,
     }
-    db_profile = ProfileService(db).create_profile_for_user(current_user.id, profile_data)
+    db_profile = ProfileService(db).create_profile_for_user(getattr(current_user, "id"), profile_data)
     return db_profile
 
 @router.put("/me", response_model=ProfileResponse)
@@ -67,14 +68,14 @@ def update_profile_me(
     """
     Update current user's profile.
     """
-    profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
     # Update via service
-    update_data = profile_in.dict(exclude_unset=True)
+    update_data = profile_in.model_dump(exclude_unset=True)
     updated = ProfileService(db).update_profile(profile, update_data)
     return updated
 
@@ -86,13 +87,13 @@ def read_preferences_me(
     """
     Get current user's preferences.
     """
-    profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
-    preferences = PreferencesService(db).get_preferences_by_profile_id(profile.id)
+    preferences = PreferencesService(db).get_preferences_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -110,7 +111,7 @@ def create_preferences_me(
     """
     Create preferences for the current user.
     """
-    profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -118,7 +119,7 @@ def create_preferences_me(
         )
     
     # Check if preferences already exist
-    db_preferences = PreferencesService(db).get_preferences_by_profile_id( profile.id)
+    db_preferences = PreferencesService(db).get_preferences_by_profile_id(getattr(profile, "id"))
     if db_preferences:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -126,7 +127,7 @@ def create_preferences_me(
         )
     
     # Create new preferences
-    db_preferences = PreferencesService(db).update_spotify_tokens( profile.id, preferences_in.dict())
+    db_preferences = PreferencesService(db).update_spotify_tokens(getattr(profile, "id"), preferences_in.model_dump())
     return db_preferences
 
 @router.put("/me/preferences", response_model=PreferencesResponse)
@@ -138,21 +139,21 @@ def update_preferences_me(
     """
     Update current user's preferences.
     """
-    profile = ProfileService(db).get_profile_by_user_id(current_user.id)
+    profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Profile not found"
         )
     
-    preferences = PreferencesService(db).get_preferences_by_profile_id(profile.id)
+    preferences = PreferencesService(db).get_preferences_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Preferences not found"
         )
     
-    update_data = preferences_in.dict(exclude_unset=True)
+    update_data = preferences_in.model_dump(exclude_unset=True)
     # Reuse update_spotify_tokens for general preference updates when spotify fields are present,
     # otherwise apply simple updates directly.
     for field, value in update_data.items():

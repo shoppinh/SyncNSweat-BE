@@ -45,7 +45,7 @@ class SpotifyService:
         try:
             preferences_service = PreferencesService(self.db)
             updated_pref = preferences_service.update_spotify_tokens(
-                profile_id=self.profile.id,
+                profile_id=getattr(self.profile, "id"),
                 token_data=token_data,
             )
 
@@ -55,7 +55,7 @@ class SpotifyService:
             try:
                 # If the returned object is attached to a different session or
                 # needs refreshing, try to refresh it in our session.
-                if hasattr(self.db, "refresh") and updated_pref is not None:
+                if hasattr(self.db, "refresh"):
                     self.db.refresh(updated_pref)
             except Exception:
                 # If refresh fails, attempt to re-query by profile_id as a fallback.
@@ -163,7 +163,7 @@ class SpotifyService:
         Returns (auth_url, code_verifier)
         """
         
-        params = {
+        params: Dict[str, Any] = {
             "client_id": self.client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
@@ -346,8 +346,8 @@ class SpotifyService:
         return {
             "id": playlist["id"],
             "name": playlist_name,
-            "external_url": (playlist.get("external_urls") or {}).get("spotify"),
-            "image_url": playlist.get("images")[0]["url"]
+            "external_url": getattr(playlist.get("external_urls", {}), "spotify", None),
+            "image_url": getattr(playlist.get("images", [])[0], "url", None)
             if playlist.get("images")
             else None,
         }

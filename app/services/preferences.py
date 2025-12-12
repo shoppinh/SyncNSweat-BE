@@ -32,12 +32,12 @@ class PreferencesService:
         if not preferences:
             preferences = Preferences(profile_id=profile_id)
             self.db.add(preferences)
-
-        preferences.spotify_connected = True
+            
+        setattr(preferences, "spotify_connected", True)  #
         # Merge token-related info into spotify_data but only overwrite when
         # the provided value is not None. This preserves existing values when
         # a refresh response doesn't include every field.
-        current: Dict[str, Any] = preferences.spotify_data or {}
+        current: Dict[str, Any] = getattr(preferences, "spotify_data", {}) 
 
         # Explicitly update fields only when provided (not None)
         if token_data.get("access_token") is not None:
@@ -50,7 +50,7 @@ class PreferencesService:
             try:
                 import time
 
-                current["expires_at"] = time.time() + float(token_data.get("expires_in"))
+                current["expires_at"] = time.time() + float(getattr(token_data, "expires_in"))
             except Exception:
                 # If computation fails, don't set expires_at
                 pass
@@ -59,8 +59,8 @@ class PreferencesService:
         if token_data.get("expires_at") is not None:
             # allow callers to explicitly set expires_at (e.g., interceptor)
             current["expires_at"] = token_data.get("expires_at")
-
-        preferences.spotify_data = current
+            
+        setattr(preferences, "spotify_data", current)
 
         # Mark the JSONB column as modified so SQLAlchemy tracks the change
         flag_modified(preferences, "spotify_data")

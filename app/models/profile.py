@@ -1,6 +1,5 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, Enum
+from sqlalchemy import Column, Integer, String, ForeignKey, Enum
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
 from sqlalchemy.types import ARRAY
 from app.db.session import Base
 import enum

@@ -1,4 +1,7 @@
 name: "Build and Deploy to Cloud Run"
+concurrency:
+  group: deploy-cloudrun-${{ github.ref }}
+  cancel-in-progress: true
 on:
   push:
     branches: [main]
@@ -15,6 +18,7 @@ env:
 jobs:
   deploy:
     runs-on: "ubuntu-latest"
+    timeout-minutes: 30
 
     permissions:
       contents: "read"
@@ -25,42 +29,57 @@ jobs:
         uses: "actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332" # actions/checkout@v4
 
       # Configure Workload Identity Federation and generate an access token.
-      #
-      # See https://github.com/google-github-actions/auth for more options,
-      # including authenticating via a JSON credentials file.
+      # See https://github.com/google-github-actions/auth for options.
       - id: "auth"
-        name: "Authenticate to Google Cloud"
+        name: "Authenticate to Google Cloud (Workload Identity)"
         uses: "google-github-actions/auth@v2"
         with:
-          # REMOVED: credentials_json
-          # ADDED: The following two lines
           workload_identity_provider: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
           service_account: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
 
-      # BEGIN - Docker auth and build
-      #
-      # If you already have a container image, you can omit these steps.
-      - name: "Docker Auth"
+      # Build & push the image via Cloud Build (offloads build work to GCP and uses Artifact Registry)
+      - name: "Build and Push Container with Cloud Build"
+        env:
+          GCP_SERVICE_ACCOUNT: "${{ secrets.GCP_SERVICE_ACCOUNT }}" # may be email or full resource name
         run: |-
-          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev"
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          SA_RAW="${GCP_SERVICE_ACCOUNT}"
+          # If no service account provided, submit without --service-account
+          if [[ -z "${SA_RAW}" ]]; then
+            echo "No GCP_SERVICE_ACCOUNT secret provided — submitting without explicit service account"
+            gcloud builds submit --project="${{ env.PROJECT_ID }}" --tag "${IMAGE}" --gcs-log-dir=gs://sync-n-sweat-build-logs-bucket .
+            exit $?
+          fi
 
-      - name: "Build and Push Container"
-        run: |-
-          DOCKER_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME}}:${{ github.sha }}"
-          docker build --tag "${DOCKER_TAG}" .
-          docker push "${DOCKER_TAG}"
-      # END - Docker auth and build
+          # Normalize: if value looks like an email, convert to full resource name
+          if [[ "${SA_RAW}" == *"@"* ]]; then
+            SA="projects/${{ env.PROJECT_ID }}/serviceAccounts/${SA_RAW}"
+          else
+            SA="${SA_RAW}"
+          fi
+
+          # Basic validation
+          if [[ "${SA}" != projects/*/serviceAccounts/* ]]; then
+            echo "Invalid service account format in GCP_SERVICE_ACCOUNT secret"
+            exit 1
+          fi
+
+          # Submit using the normalized service account
+          gcloud builds submit --project="${{ env.PROJECT_ID }}" --tag "${IMAGE}" --service-account="${SA}" --gcs-log-dir=gs://sync-n-sweat-build-logs-bucket .
+
       - name: "Deploy to Cloud Run"
         uses: "google-github-actions/deploy-cloudrun@v2"
         with:
           service: "${{ env.SERVICE_NAME }}"
           region: "${{ env.REGION }}"
-          # NOTE: If using a pre-built image, update the image name below:
-          image: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME}}:${{ github.sha }}"
+          image: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
           flags: |
             --port=8000
             --add-cloudsql-instances=${{ env.PROJECT_ID }}:${{ env.REGION }}:${{ env.CLOUD_SQL_INSTANCE_ID }}
             --service-account="${{ secrets.GCP_SERVICE_ACCOUNT }}"
+            --concurrency=50
+            --memory=512Mi
+          # Use full Secret Manager resource names for clarity and tighter access control
           secrets: |
             DATABASE_URI=DATABASE_URI:latest
             SECRET_KEY=SECRET_KEY:latest
@@ -72,8 +91,3 @@ jobs:
             API_URL=API_URL:latest
             GEMINI_API_KEY=GEMINI_API_KEY:latest
             DEFAULT_SPOTIFY_USER_PASSWORD=DEFAULT_SPOTIFY_USER_PASSWORD:latest
-      # If required, use the Cloud Run URL output in later steps
-      - name: "Show output"
-        run: |2-
-
-          echo ${{ steps.deploy.outputs.url }}

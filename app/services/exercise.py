@@ -76,7 +76,7 @@ class ExerciseService:
     # End of external source methods
     
     # Start of internal methods
-    def get_exercises(self, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def get_exercises(self, params: Optional[Dict[str, Any]] = None) -> List[Exercise]:
         """
         Get a list of exercises.
         """
@@ -118,7 +118,7 @@ class ExerciseService:
         # 4. Assign sets, reps, and rest periods based on fitness level and goals
         
         # For now, we'll just return a mock workout
-        exercises = []
+        exercises: List[Dict[str, Any]] = []
         
         # Get some exercises for each muscle group
         for muscle in muscle_groups:
@@ -141,7 +141,7 @@ class ExerciseService:
         exercises = exercises[:max_exercises]
         
         # Add workout-specific details
-        workout_exercises = []
+        workout_exercises: List[Dict[str, Any]] = []
         for i, ex in enumerate(exercises):
             # Determine sets and reps based on fitness level
             if fitness_level == "beginner":

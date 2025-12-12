@@ -1,14 +1,17 @@
-from datetime import datetime
-from google import genai
 import json
-from typing import Dict, Any, List, Callable, Optional, cast
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional
+
+from google import genai
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.preferences import Preferences
 from app.models.profile import FitnessLevel, Profile
 from app.models.workout import Exercise
 from app.services.spotify import SpotifyService
-from sqlalchemy.orm import Session
+
+
 class GeminiService:
     def __init__(self, db:Session, profile: Profile, preferences: Preferences):
         """
@@ -35,14 +38,14 @@ class GeminiService:
 
         prompt = f"""
         As a fitness expert, create a personalized workout plan for:
-        - Fitness level: {self.profile.fitness_level if self.profile.fitness_level else 'beginner'}
-        - Fitness goal: {self.profile.fitness_goal if self.profile.fitness_goal else 'general_fitness'}
-        - Available days: {self.profile.available_days if self.profile.available_days else ['Monday', 'Wednesday', 'Friday']}
-        - Workout duration: {self.profile.workout_duration_minutes if self.profile.workout_duration_minutes else 45}
+        - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
+        - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
+        - Available days: {getattr(self.profile, "available_days", ['Monday', 'Wednesday', 'Friday'])}
+        - Workout duration: {getattr(self.profile, "workout_duration_minutes", 45)}
         - Preferences:
-         + Available equipment: {self.preferences.available_equipment if self.preferences.available_equipment else ['dumbbells', 'resistance bands']}
-         + Target muscle groups: {self.preferences.target_muscle_groups if self.preferences.target_muscle_groups else []}
-         + Exercise types: {self.preferences.exercise_types if self.preferences.exercise_types else ['strength', 'cardio']}
+         + Available equipment: {getattr(self.preferences, "available_equipment", ['dumbbells', 'resistance bands'])}
+         + Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
+         + Exercise types: {getattr(self.preferences, "exercise_types", ['strength', 'cardio'])}
          + Number of exercises: {num_exercises}
 
 
@@ -71,6 +74,14 @@ class GeminiService:
             
         try:
             # Clean up potential markdown formatting from the response
+            if response.text is None:
+                return {
+                    "exercises": [],
+                    "intensity": 5,
+                    "duration": 45,
+                    "notes": "Response from AI is empty. Please try again.",
+                    "spotify_playlist": "default-workout-playlist"
+                }
             cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
             return json.loads(cleaned_response)
         except (json.JSONDecodeError, AttributeError):
@@ -85,7 +96,7 @@ class GeminiService:
     async def get_spotify_playlist_recommendations(self) -> Dict[str, Any]:
         # Fetch user's Spotify data
         # This assumes you have the user's Spotify access token stored and refreshed
-        if not self.preferences.spotify_data:
+        if getattr(self.preferences, "spotify_data", None) is None:
             return {
                 "message": "Spotify data is not available. Please connect your Spotify account and try again.",
                 "playlist_recommendations": [],
@@ -116,11 +127,11 @@ class GeminiService:
         prompt = f"""
         You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences.
         Here's the user's information:
-        - Preferred Genres: {', '.join(self.preferences.music_genres) if self.preferences.music_genres else 'None'}
+        - Preferred Genres: {', '.join(getattr(self.preferences, "music_genres", [])) if getattr(self.preferences, "music_genres", []) else 'None'}
         - User's Top Tracks: {', '.join(top_track_names[:10]) if top_track_names else 'None'}
         - User's Top Artists: {', '.join(top_artist_names[:10]) if top_artist_names else 'None'}
 
-        Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {self.profile.workout_duration_minutes} minutes. Provide the output in a structured JSON format.
+        Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {getattr(self.profile, "workout_duration_minutes", 45)} minutes. Provide the output in a structured JSON format.
         The JSON should have a 'playlist_recommendations' key, which is a list of dicts.
         Each dict should have:
         - 'song_title': (string)
@@ -292,11 +303,9 @@ class GeminiService:
         workout_plan = self._normalize_workout(raw_plan, self.profile)
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
-        raw_playlist = await self.get_spotify_playlist_recommendations()
-        playlist_result: Dict[str, Any]
-        if raw_playlist is not None:
-            playlist_result = raw_playlist
-        else:
+        # 
+        playlist_result: Dict[str, Any] = await self.get_spotify_playlist_recommendations()
+        if not playlist_result: 
             playlist_result = {
                 "message": "Unable to generate playlist from LLM/Spotify.",
                 "playlist_recommendations": [],
@@ -306,23 +315,6 @@ class GeminiService:
             }
 
         return {"workout_plan": workout_plan, "playlist": playlist_result}
-
-    async def refresh_workout_playlist(self) -> Dict[str, Any]:
-        """
-        Method to refresh Spotify playlist recommendations.
-        This can be used when user wants to regenerate their workout playlist.
-        """
-
-        # Fetch user's Spotify data
-        # This assumes you have the user's Spotify access token stored and refreshed
-        if not self.preferences.spotify_data:
-            return {
-                "message": "Spotify data is not available. Please connect your Spotify account and try again.",
-                "playlist_recommendations": [],
-                "playlist_url": None,
-                "playlist_id": None,
-                "playlist_name": None
-            }
     
     async def get_exercise_swap(self,current_exercise: Exercise,target_muscle_groups: List[str],fitness_level: str, available_equipment: List[str], recently_used_exercise_names: List[str]) -> Optional[Dict[str, Any]]:
         """

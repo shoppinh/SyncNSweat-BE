@@ -17,8 +17,8 @@ class ExerciseCreate(ExerciseBase):
 class ExerciseUpdate(ExerciseBase):
     pass
 class ExerciseSearch(ExerciseBase):
-    name: Optional[str] = None
-    target: Optional[str] = None
+    name: Optional[str] = None  # type: ignore[override]
+    target: Optional[str] = None  # type: ignore[override]
 
 class ExerciseResponse(ExerciseBase):
     id: int

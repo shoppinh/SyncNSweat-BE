@@ -1,8 +1,7 @@
 import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from app.models.workout import Exercise
-from app.schemas.exercise import WorkoutExerciseResponse
 from app.services.exercise import ExerciseService
 from app.utils.helper import safe_int_convert
 from sqlalchemy.orm import Session
@@ -22,7 +21,7 @@ class ExerciseSelectorService:
         fitness_level: str,
         available_equipment: List[str],
         workout_duration_minutes: int,
-        recently_used_exercises: List[str] = None
+        recently_used_exercises: List[str]
     ) -> List[Dict[str, Any]]:
         """
         Select exercises for a workout based on focus, user level, and equipment.
@@ -90,7 +89,7 @@ class ExerciseSelectorService:
         selected_exercises = all_exercises[:max_exercises]
         
         # Add workout-specific details
-        workout_exercises = []
+        workout_exercises: List[Dict[str, Any]] = []
         for i, ex in enumerate(selected_exercises):
             # Determine sets and reps based on fitness level
             if fitness_level.lower() == "beginner":
@@ -106,7 +105,7 @@ class ExerciseSelectorService:
                 reps = "12-15"
                 rest_seconds = 30
 
-            exercise_details = {
+            exercise_details: Dict[str, Any] = {
                 "exercise_id": safe_int_convert(ex.id),
                 "sets": sets,
                 "reps": reps,
@@ -124,7 +123,7 @@ class ExerciseSelectorService:
         equipment: str,
         fitness_level: str,
         available_equipment: List[str],
-        recently_used_exercises: List[int] = None
+        recently_used_exercises: List[int] 
     ) -> Dict[str, Any]:
         """
         Swap an exercise with another one that targets the same muscle group.
