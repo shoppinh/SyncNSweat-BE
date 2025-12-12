@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import users, auth, profiles, workouts, playlists, database, exercises
+from app.api.endpoints import users, auth, profiles, workouts, playlists, database, exercises, health
 
 router = APIRouter()
 
@@ -10,3 +10,4 @@ router.include_router(workouts.router, prefix="/workouts", tags=["workouts"])
 router.include_router(exercises.router, prefix="/exercises", tags=["exercises"])
 router.include_router(playlists.router, prefix="/playlists", tags=["playlists"])
 router.include_router(database.router, prefix="/database", tags=["database"])
+router.include_router(health.router, prefix="/health", tags=["health"])
