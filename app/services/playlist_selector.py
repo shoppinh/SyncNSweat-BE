@@ -1,6 +1,8 @@
 import random
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 from app.services.spotify import SpotifyService
+
 
 class PlaylistSelectorService:
     """
@@ -28,7 +30,7 @@ class PlaylistSelectorService:
             "medium": 130,
             "fast": 160
         }
-    
+    # TODO: Use this method as fallback in playlist selection if Gemini API fails
     def select_playlist_for_workout(
         self,
         access_token: str,

@@ -1,9 +1,11 @@
+from typing import Any, Dict, List, Optional
+
 import requests
-from typing import Dict, List, Optional, Any
-from app.core.config import settings
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.workout import Exercise
+
 
 class ExerciseService:
     def __init__(self, db: Session):
@@ -100,6 +102,7 @@ class ExerciseService:
         """
         return self.db.query(Exercise).filter(Exercise.equipment == equipment).all()
     
+    #  DEPRECATED: Use workout selector service as fallback method for exercise generation if Gemini API fails
     def generate_workout(
         self,
         muscle_groups: List[str],
