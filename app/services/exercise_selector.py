@@ -17,17 +17,18 @@ class ExerciseSelectorService:
     
     def select_exercises_for_workout(
         self,
-        focus: str,
+        fitness_goal: str,
         fitness_level: str,
         available_equipment: List[str],
         workout_duration_minutes: int,
-        recently_used_exercises: List[str]
+        target_muscle_groups: List[str] | None = None,
+        recently_used_exercises: List[str] = []
     ) -> List[Dict[str, Any]]:
         """
         Select exercises for a workout based on focus, user level, and equipment.
         
         Args:
-            focus: The focus of the workout (e.g., "Upper Body", "Push")
+            fitness_goal: The goal of the workout (e.g., "strength", "weight_loss", "muscle_gain")
             fitness_level: The user's fitness level (e.g., "beginner", "intermediate", "advanced")
             available_equipment: List of equipment the user has access to
             workout_duration_minutes: The user's preferred workout duration in minutes
@@ -36,21 +37,22 @@ class ExerciseSelectorService:
         Returns:
             A list of exercise dictionaries
         """
+        normalized_available_equipment = [eq.lower() for eq in available_equipment]
         if not recently_used_exercises:
             recently_used_exercises = []
         
         # Get muscle groups for he focus
-        muscle_groups = self._get_muscle_groups_for_focus(focus)
+        muscle_groups = target_muscle_groups or self._get_muscle_groups_for_goal(fitness_goal)
         
         # Get exercises for each muscle group
         all_exercises: List[Exercise] = []
         for muscle in muscle_groups:
             try:
-                muscle_exercises = self.exercise_service.get_exercises_by_muscle(muscle)[:3]
+                muscle_exercises = self.exercise_service.get_exercises_by_target(muscle)[:3]
                 # Filter by available equipment
                 filtered_exercises = [
                     ex for ex in muscle_exercises
-                    if ex.equipment in available_equipment
+                    if ex.equipment.lower() in normalized_available_equipment
                 ]
                 # Filter out recently used exercises
                 filtered_exercises = [
@@ -66,11 +68,11 @@ class ExerciseSelectorService:
         if len(all_exercises) < 3:
             for muscle in muscle_groups:
                 try:
-                    muscle_exercises = self.exercise_service.get_exercises_by_muscle(muscle)
+                    muscle_exercises = self.exercise_service.get_exercises_by_target(muscle)
                     # Filter by available equipment only
                     filtered_exercises = [
                         ex for ex in muscle_exercises
-                        if ex.equipment in available_equipment
+                        if ex.equipment.lower() in normalized_available_equipment
                     ]
                     # Add exercises that weren't already added
                     for ex in filtered_exercises:
@@ -111,6 +113,13 @@ class ExerciseSelectorService:
                 "reps": reps,
                 "rest_seconds": rest_seconds,
                 "order": i + 1,
+                "name": ex.name,
+                "instructions": ex.instructions,
+                "target": ex.target,
+                "body_part": ex.body_part,
+                "secondary_muscles": ex.secondary_muscles,
+                "equipment": ex.equipment,
+                "gif_url": ex.gif_url
             }
             workout_exercises.append(exercise_details)
         
@@ -148,7 +157,7 @@ class ExerciseSelectorService:
         
         # Get exercises for the muscle group
         try:
-            muscle_exercises = self.exercise_service.get_exercises_by_muscle(muscle_group)
+            muscle_exercises = self.exercise_service.get_exercises_by_target(muscle_group)
             
             # Filter by available equipment
             filtered_exercises = [
@@ -174,7 +183,7 @@ class ExerciseSelectorService:
                 similar_muscles = self._get_similar_muscle_groups(muscle_group)
                 for similar_muscle in similar_muscles:
                     try:
-                        similar_exercises = self.exercise_service.get_exercises_by_muscle(similar_muscle)
+                        similar_exercises = self.exercise_service.get_exercises_by_target(similar_muscle)
                         # Filter by available equipment
                         similar_filtered = [
                             ex for ex in similar_exercises
@@ -239,33 +248,39 @@ class ExerciseSelectorService:
                 "rest_seconds": 60
             }
     
-    def _get_muscle_groups_for_focus(self, focus: str) -> List[str]:
+    def _get_muscle_groups_for_goal(self, fitness_goal: str) -> List[str]:
         """
-        Get the muscle groups for a given workout focus.
-        
+        Return muscle groups for a given workout goal.
+
+        Supports both human-friendly goals (e.g. "Full Body", "Upper Body")
+        and the predefined fitness_goal values used elsewhere in the app
+        ("strength", "endurance", "weight_loss", "muscle_gain", "general_fitness").
+
         Args:
-            focus: The workout focus (e.g., "Upper Body", "Push")
-            
+            fitness_goal: The workout goal string.
+
         Returns:
-            A list of muscle groups
+            A list of muscle group names.
         """
-        
-        focus_map = {
-            "Full Body": ["abductors", "abs", "adductors", "biceps", "calves", "cardiovascular system", "delts", "forearms", "glutes", "hamstrings", "lats", "levator scapulae", "pectorals", "quads", "serratus anterior", "spine", "traps", "triceps", "upper back"],
-            "Upper Body": ["biceps", "delts", "forearms", "lats", "levator scapulae", "pectorals", "serratus anterior", "traps", "triceps", "upper back"],
-            "Lower Body": ["abductors", "adductors", "calves", "glutes", "hamstrings", "quads"],
-            "Push": ["delts", "pectorals", "serratus anterior", "triceps"],
-            "Pull": ["biceps", "forearms", "lats", "upper back"],
-            "Legs": ["abductors", "adductors", "calves", "glutes", "hamstrings", "quads"],
-            "Chest": ["pectorals", "serratus anterior"],
-            "Back": ["lats", "levator scapulae", "upper back"],
-            "Shoulders": ["delts", "traps"],
-            "Arms": ["biceps", "forearms", "triceps"],
-            "Core": ["abs", "spine"]
+
+        if not fitness_goal:
+            return ["pectorals", "serratus anterior"]
+
+        key = str(fitness_goal).strip().lower()
+
+        goal_map = {
+
+            # predefined fitness_goal values (semantic mappings)
+            "strength": ["pectorals", "lats", "quads", "glutes", "hamstrings", "delts", "traps", "biceps", "triceps"],
+            "muscle_gain": ["pectorals", "lats", "quads", "glutes", "hamstrings", "delts", "traps", "biceps", "triceps"],
+            "endurance": ["cardiovascular system", "calves", "quads", "hamstrings", "abs"],
+            "weight_loss": ["cardiovascular system", "quads", "glutes", "hamstrings", "abs", "calves"],
+            "general_fitness": ["pectorals", "lats", "quads", "glutes", "abs"]
         }
-        
-        return focus_map.get(focus, ["pectorals", "serratus anterior"])  # Default to some major muscle groups
-    
+
+        # prefer an exact match, otherwise fall back to general fitness groups
+        return goal_map.get(key, goal_map["general_fitness"])
+
     def _get_similar_muscle_groups(self, muscle_group: str) -> List[str]:
         """
         Get similar muscle groups for a given muscle group.

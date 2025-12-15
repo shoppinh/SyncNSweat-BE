@@ -18,6 +18,7 @@ from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
                                   WorkoutUpdate)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
+from app.services.playlist_selector import PlaylistSelectorService
 from app.services.scheduler import SchedulerService
 
 # Define constants for error messages
@@ -85,12 +86,42 @@ async def suggest_workout_schedule(
         raise HTTPException(status_code=500, detail=f"Error generating AI recommendations: {str(e)}")
 
     # Create workout record
-    workout_plan: Dict[str, Any] = ai_plan.get("workout_plan") or {}
     playlist: Dict[str, str] = ai_plan.get("playlist") or {}
     playlist_id = playlist.get("playlist_id")
     playlist_name = playlist.get("playlist_name")
     playlist_url = playlist.get("playlist_url")
 
+    if not playlist_url:
+        print("AI did not return a playlist URL, proceeding without playlist.")
+        playlist_selector = PlaylistSelectorService(db,profile, preferences)
+        playlist_data = playlist_selector.select_playlist_for_workout(
+            fitness_goal=profile.fitness_goal.value,
+            music_genres=cast(List[str], preferences.music_genres),
+            music_tempo=cast(str,preferences.music_tempo),
+        )
+        playlist_id = playlist_data.get("playlist_id")
+        playlist_name = playlist_data.get("playlist_name")
+        playlist_url = playlist_data.get("playlist_url")
+        
+
+    # Workout creation flow
+    workout_plan: Dict[str, Any] = ai_plan.get("workout_plan", {})
+    workout_exercises = workout_plan.get("exercises", [])
+    # If workout_plan's exercises is missing or empty, use the fallback exercises selector
+    
+    if len(workout_exercises) == 0: 
+        print("AI did not return exercises, using ExerciseSelectorService as fallback.")
+        exercise_selector = ExerciseSelectorService(db)
+        selected_exercises = exercise_selector.select_exercises_for_workout(
+            fitness_goal=profile.fitness_goal.value,
+            fitness_level=profile.fitness_level.value,
+            available_equipment=cast(List[str], preferences.available_equipment),
+            target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
+            workout_duration_minutes=cast(int, profile.workout_duration_minutes),
+            recently_used_exercises=[]
+        )
+        workout_exercises = selected_exercises
+    
     db_workout = Workout(
         user_id=current_user.id,
         duration_minutes=profile.workout_duration_minutes,
@@ -103,7 +134,6 @@ async def suggest_workout_schedule(
     db.add(db_workout)
     db.flush()  # get id for FK relationships
 
-    workout_exercises: List[WorkoutExercise] = workout_plan.get("exercises", [])
     created_workout_exercises: List[WorkoutExercise] = []
 
     for idx, workout_ex in enumerate(workout_exercises):

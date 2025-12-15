@@ -90,11 +90,11 @@ class ExerciseService:
         """
         return self.db.query(Exercise).filter(Exercise.id == exercise_id).first()
     
-    def get_exercises_by_muscle(self, muscle: str) -> List[Exercise]:
+    def get_exercises_by_target(self, target: str) -> List[Exercise]:
         """
         Get exercises by target muscle.
         """
-        return self.db.query(Exercise).filter(Exercise.target == muscle).all()
+        return self.db.query(Exercise).filter(Exercise.target.ilike(f"%{target}%")).all()
     
     def get_exercises_by_equipment(self, equipment: str) -> List[Exercise]:
         """

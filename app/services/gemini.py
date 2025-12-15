@@ -50,7 +50,7 @@ class GeminiService:
 
 
         Format the response as a valid JSON object with the following keys:
-        - "exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings.
+        - "exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
         - "intensity": an integer representing the overall workout intensity from 1 to 10.
         - "duration": an integer for the recommended workout duration in minutes.
         - "notes": a string containing any specific form or safety tips.
@@ -131,26 +131,11 @@ class GeminiService:
         - User's Top Tracks: {', '.join(top_track_names[:10]) if top_track_names else 'None'}
         - User's Top Artists: {', '.join(top_artist_names[:10]) if top_artist_names else 'None'}
 
-        Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {getattr(self.profile, "workout_duration_minutes", 45)} minutes. Provide the output in a structured JSON format.
-        The JSON should have a 'playlist_recommendations' key, which is a list of dicts.
-        Each dict should have:
-        - 'song_title': (string)
-        - 'artist_name': (string)
-
-        Example JSON structure:
-        {{
-            "playlist_recommendations": [
-                {{
-                    "song_title": "Blinding Lights",
-                    "artist_name": "The Weeknd",
-                }},
-                {{
-                    "song_title": "Levitating",
-                    "artist_name": "Dua Lipa",
-                }}
-            ]
-        }}
-        Remember to return the response strictly in JSON format without any additional text.
+        Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {getattr(self.profile, "workout_duration_minutes", 45)} minutes. 
+        Provide the output in a structured JSON format with no additional text.
+        - The JSON should have a 'playlist_recommendations' key, which is a list of dicts. Each dict should have:
+            + 'song_title': (string)
+            + 'artist_name': (string)
         """
 
         try:
@@ -196,7 +181,7 @@ class GeminiService:
             else:
                 return {"message": "No tracks found for the recommendations."}
 
-        except (json.JSONDecodeError, AttributeError) as e:
+        except Exception as e:
             print(f"Error processing playlist recommendations: {e}")
             return {
                 "message": "Error processing playlist recommendations. Please try again.",

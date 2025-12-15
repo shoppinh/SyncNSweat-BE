@@ -124,6 +124,33 @@ class SpotifyService:
         except SpotifyTokenExpiredException as e:
             # If token refresh fails, raise an error
             raise Exception(f"Token refresh failed: {str(e)}")
+
+    def make_api_call(
+        self,
+        method: str,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        expires_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Public wrapper around the interceptor-backed API call.
+
+        This keeps higher-level services from reaching into protected internals
+        while still leveraging the interceptor's token refresh behavior.
+        """
+        return self._make_api_call_with_interceptor(
+            method=method,
+            url=url,
+            params=params,
+            data=data,
+            json_data=json_data,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
     
     def get_access_token_with_interceptor(
         self, code: str, redirect_uri: str
@@ -168,7 +195,7 @@ class SpotifyService:
             "client_id": self.client_id,
             "response_type": "code",
             "redirect_uri": redirect_uri,
-            "scope": "user-read-private user-read-email user-library-read user-library-modify user-top-read user-read-playback-state user-modify-playback-state playlist-read-private playlist-modify-public playlist-modify-private",
+            "scope": "user-read-private user-read-email user-library-read user-library-modify user-top-read user-read-playback-state user-modify-playback-state playlist-read-private playlist-modify-public playlist-modify-private user-read-recently-played",
         }
         if state:
             params["state"] = state
