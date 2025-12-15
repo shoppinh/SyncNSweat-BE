@@ -18,7 +18,7 @@ class GeminiService:
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = 'gemini-2.5-flash-lite'
+        self.model_name = 'gemini-2.5-flash'
         self.spotify_service = SpotifyService(db, profile, preferences)  
         self.profile = profile
         self.preferences = preferences

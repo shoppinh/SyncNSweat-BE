@@ -70,7 +70,8 @@ class SpotifyService:
 
             if updated_pref is not None:
                 self.preferences = updated_pref
-        except Exception:
+        except Exception as e:
+            print(f"Error persisting refreshed tokens: {str(e)}")
             # Swallow exceptions here — persistence failure should not crash
             # the interceptor flow. Operators can monitor logs to detect issues.
             return
@@ -346,8 +347,8 @@ class SpotifyService:
         return {
             "id": playlist["id"],
             "name": playlist_name,
-            "external_url": getattr(playlist.get("external_urls", {}), "spotify", None),
-            "image_url": getattr(playlist.get("images", [])[0], "url", None)
+            "external_url": playlist.get("external_urls", {}).get("spotify", ""),
+            "image_url":playlist.get("images", [])[0]["url"] or None
             if playlist.get("images")
             else None,
         }

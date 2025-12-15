@@ -2,6 +2,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+import time
 from app.models.profile import Profile
 from app.models.preferences import Preferences
 
@@ -38,22 +39,17 @@ class PreferencesService:
         # the provided value is not None. This preserves existing values when
         # a refresh response doesn't include every field.
         current: Dict[str, Any] = getattr(preferences, "spotify_data", {}) 
-
+        
         # Explicitly update fields only when provided (not None)
         if token_data.get("access_token") is not None:
             current["access_token"] = token_data.get("access_token")
         if token_data.get("refresh_token") is not None:
             current["refresh_token"] = token_data.get("refresh_token")
         if token_data.get("expires_in") is not None:
-            current["expires_in"] = token_data.get("expires_in")
+            updated_expires_in = token_data.get("expires_in", 3600)
+            current["expires_in"] = updated_expires_in
             # compute expires_at for convenience if expires_in provided
-            try:
-                import time
-
-                current["expires_at"] = time.time() + float(getattr(token_data, "expires_in"))
-            except Exception:
-                # If computation fails, don't set expires_at
-                pass
+            current["expires_at"] = time.time() + float(updated_expires_in)
         if token_data.get("token_type") is not None:
             current["token_type"] = token_data.get("token_type")
         if token_data.get("expires_at") is not None:
