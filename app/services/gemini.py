@@ -150,6 +150,7 @@ class GeminiService:
                 }}
             ]
         }}
+        Remember to return the response strictly in JSON format without any additional text.
         """
 
         try:
