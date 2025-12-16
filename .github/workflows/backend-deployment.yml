@@ -40,11 +40,48 @@ jobs:
           workload_identity_provider: "${{ env.WORKLOAD_IDENTITY_PROVIDER }}"
           service_account: "${{ env.SERVICE_ACCOUNT }}"
 
+      # Update GCP Secret Manager directly (bypassing Terraform state)
+      - name: "Update Secrets in GCP Secret Manager"
+        run: |
+          # Function to create or update a secret
+          update_secret() {
+            SECRET_NAME=$1
+            SECRET_VALUE=$2
+            
+            # Check if secret exists
+            if gcloud secrets describe "${SECRET_NAME}" --project="${{ env.PROJECT_ID }}" >/dev/null 2>&1; then
+              echo "Updating existing secret: ${SECRET_NAME}"
+              echo -n "${SECRET_VALUE}" | gcloud secrets versions add "${SECRET_NAME}" \
+                --project="${{ env.PROJECT_ID }}" \
+                --data-file=-
+            else
+              echo "Creating new secret: ${SECRET_NAME}"
+              echo -n "${SECRET_VALUE}" | gcloud secrets create "${SECRET_NAME}" \
+                --project="${{ env.PROJECT_ID }}" \
+                --replication-policy="automatic" \
+                --data-file=-
+            fi
+          }
+          
+          # Update all secrets
+          update_secret "DATABASE_URI" "${{ secrets.DATABASE_URI }}"
+          update_secret "SECRET_KEY" "${{ secrets.SECRET_KEY }}"
+          update_secret "SPOTIFY_CLIENT_ID" "${{ secrets.SPOTIFY_CLIENT_ID }}"
+          update_secret "SPOTIFY_CLIENT_SECRET" "${{ secrets.SPOTIFY_CLIENT_SECRET }}"
+          update_secret "SPOTIFY_REDIRECT_URL" "${{ secrets.SPOTIFY_REDIRECT_URL }}"
+          update_secret "EXERCISE_API_KEY" "${{ secrets.EXERCISE_API_KEY }}"
+          update_secret "EXERCISE_API_HOST" "${{ secrets.EXERCISE_API_HOST }}"
+          update_secret "API_URL" "${{ secrets.API_URL }}"
+          update_secret "GEMINI_API_KEY" "${{ secrets.GEMINI_API_KEY }}"
+          update_secret "DEFAULT_SPOTIFY_USER_PASSWORD" "${{ secrets.DEFAULT_SPOTIFY_USER_PASSWORD }}"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        
       - name: Terraform Init
         working-directory: infra
         run: terraform init
+        
       - name: Terraform Plan
         working-directory: infra
         run: |
@@ -53,6 +90,7 @@ jobs:
             -var="region=${{ env.REGION }}" \
             -var="github_repo=${{ github.repository }}" \
             -var="db_password=${{ env.CLOUD_SQL_DB_PASSWORD }}"
+            
       - name: Terraform Apply
         working-directory: infra
         run: |
