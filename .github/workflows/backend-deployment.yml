@@ -9,14 +9,15 @@ on:
     branches: [main]
 
 env:
-  PROJECT_ID: "${{ secrets.GCP_PROJECT_ID }}" # TODO: update to your Google Cloud project ID
-  REGION: "${{ secrets.GCP_REGION }}" # TODO: update to your region
-  SERVICE_NAME: "${{ secrets.GCP_SERVICE_NAME }}" # TODO: update to your service name
-  SERVICE_REGISTRY: "${{ secrets.GCP_SERVICE_REGISTRY }}"
-  CLOUD_SQL_INSTANCE_ID: "${{ secrets.GCP_CLOUD_SQL_INSTANCE_ID }}"
-  CLOUD_SQL_DB_PASSWORD: "${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
-  SERVICE_ACCOUNT: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
-  WORKLOAD_IDENTITY_PROVIDER: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+  # Only actual secrets - infrastructure values come from Terraform outputs
+  # Application secrets
+  SECRET_KEY: "${{ secrets.SECRET_KEY }}"
+  SPOTIFY_CLIENT_ID: "${{ secrets.SPOTIFY_CLIENT_ID }}"
+  SPOTIFY_CLIENT_SECRET: "${{ secrets.SPOTIFY_CLIENT_SECRET }}"
+  EXERCISE_API_KEY: "${{ secrets.EXERCISE_API_KEY }}"
+  EXERCISE_API_HOST: "${{ secrets.EXERCISE_API_HOST }}"
+  GEMINI_API_KEY: "${{ secrets.GEMINI_API_KEY }}"
+  DEFAULT_SPOTIFY_USER_PASSWORD: "${{ secrets.DEFAULT_SPOTIFY_USER_PASSWORD }}"
 
 jobs:
   deploy:
@@ -31,52 +32,20 @@ jobs:
       - name: "Checkout"
         uses: "actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332" # actions/checkout@v4
 
-      # Configure Workload Identity Federation and generate an access token.
-      # See https://github.com/google-github-actions/auth for options.
-      - id: "auth"
-        name: "Authenticate to Google Cloud (Workload Identity)"
+      - name: "Authenticate to Google Cloud (Workload Identity)"
         uses: "google-github-actions/auth@v2"
         with:
-          workload_identity_provider: "${{ env.WORKLOAD_IDENTITY_PROVIDER }}"
-          service_account: "${{ env.SERVICE_ACCOUNT }}"
+          workload_identity_provider: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          service_account: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
 
-      # Update GCP Secret Manager directly (bypassing Terraform state)
-      - name: "Update Secrets in GCP Secret Manager"
-        run: |
-          # Function to create or update a secret
-          update_secret() {
-            SECRET_NAME=$1
-            SECRET_VALUE=$2
-            
-            # Check if secret exists
-            if gcloud secrets describe "${SECRET_NAME}" --project="${{ env.PROJECT_ID }}" >/dev/null 2>&1; then
-              echo "Updating existing secret: ${SECRET_NAME}"
-              echo -n "${SECRET_VALUE}" | gcloud secrets versions add "${SECRET_NAME}" \
-                --project="${{ env.PROJECT_ID }}" \
-                --data-file=-
-            else
-              echo "Creating new secret: ${SECRET_NAME}"
-              echo -n "${SECRET_VALUE}" | gcloud secrets create "${SECRET_NAME}" \
-                --project="${{ env.PROJECT_ID }}" \
-                --replication-policy="automatic" \
-                --data-file=-
-            fi
-          }
-          
-          # Update all secrets
-          update_secret "DATABASE_URI" "${{ secrets.DATABASE_URI }}"
-          update_secret "SECRET_KEY" "${{ secrets.SECRET_KEY }}"
-          update_secret "SPOTIFY_CLIENT_ID" "${{ secrets.SPOTIFY_CLIENT_ID }}"
-          update_secret "SPOTIFY_CLIENT_SECRET" "${{ secrets.SPOTIFY_CLIENT_SECRET }}"
-          update_secret "SPOTIFY_REDIRECT_URL" "${{ secrets.SPOTIFY_REDIRECT_URL }}"
-          update_secret "EXERCISE_API_KEY" "${{ secrets.EXERCISE_API_KEY }}"
-          update_secret "EXERCISE_API_HOST" "${{ secrets.EXERCISE_API_HOST }}"
-          update_secret "API_URL" "${{ secrets.API_URL }}"
-          update_secret "GEMINI_API_KEY" "${{ secrets.GEMINI_API_KEY }}"
-          update_secret "DEFAULT_SPOTIFY_USER_PASSWORD" "${{ secrets.DEFAULT_SPOTIFY_USER_PASSWORD }}"
+      # Configure Workload Identity Federation and generate an access token.
+      # See https://github.com/google-github-actions/auth for options.
+      
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false  # Needed to parse outputs as JSON
         
       - name: Terraform Init
         working-directory: infra
@@ -86,60 +55,103 @@ jobs:
         working-directory: infra
         run: |
           terraform plan \
-            -var="project_id=${{ env.PROJECT_ID }}" \
-            -var="region=${{ env.REGION }}" \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
             -var="github_repo=${{ github.repository }}" \
-            -var="db_password=${{ env.CLOUD_SQL_DB_PASSWORD }}"
+            -var="db_password=${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
             
       - name: Terraform Apply
         working-directory: infra
         run: |
           terraform apply -auto-approve \
-            -var="project_id=${{ env.PROJECT_ID }}" \
-            -var="region=${{ env.REGION }}" \
+            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
+            -var="region=${{ secrets.GCP_REGION }}" \
             -var="github_repo=${{ github.repository }}" \
-            -var="db_password=${{ env.CLOUD_SQL_DB_PASSWORD }}"
+            -var="db_password=${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
+
+      # Get ALL infrastructure values from Terraform outputs
+      - name: "Get Terraform Outputs"
+        id: tf
+        working-directory: infra
+        run: |
+          echo "project_id=$(terraform output -raw project_id)" >> $GITHUB_OUTPUT
+          echo "region=$(terraform output -raw region)" >> $GITHUB_OUTPUT
+          echo "service_name=$(terraform output -raw cloud_run_service_name)" >> $GITHUB_OUTPUT
+          echo "artifact_registry_url=$(terraform output -raw artifact_registry_url)" >> $GITHUB_OUTPUT
+          echo "service_account=$(terraform output -raw service_account_email)" >> $GITHUB_OUTPUT
+          echo "cloudrun_service_account=$(terraform output -raw cloudrun_service_account)" >> $GITHUB_OUTPUT
+          echo "cloud_run_url=$(terraform output -raw cloud_run_url)" >> $GITHUB_OUTPUT
+          echo "cloud_sql_connection=$(terraform output -raw cloud_sql_connection_name)" >> $GITHUB_OUTPUT
+          echo "secret_names=$(terraform output -json secret_names)" >> $GITHUB_OUTPUT
+
+      # Already authenticated above (needed for Terraform backend access).
+      # Update secret VALUES in GCP Secret Manager (Terraform already created the resources)
+      - name: "Update Secret Values in GCP Secret Manager"
+        run: |
+          # Get secret names from Terraform outputs
+          SECRET_NAMES='${{ steps.tf.outputs.secret_names }}'
+          
+          # Function to update a secret value (assumes secret resource already exists from Terraform)
+          update_secret_value() {
+            SECRET_NAME=$1
+            SECRET_VALUE=$2
+            
+            if [ -z "$SECRET_VALUE" ]; then
+              echo "⚠️  Warning: No value provided for ${SECRET_NAME} - skipping"
+              return
+            fi
+            
+            echo "✓ Updating secret value: ${SECRET_NAME}"
+            echo -n "${SECRET_VALUE}" | gcloud secrets versions add "${SECRET_NAME}" \
+              --project="${{ steps.tf.outputs.project_id }}" \
+              --data-file=-
+          }
+          
+          # Update all secret values (only those used in application)
+          # Construct a socket-style DATABASE_URI so Cloud Run uses the built-in Cloud SQL connector
+          DB_USER="${{steps.tf.outputs.database_user}}"
+          DB_NAME="${{steps.tf.outputs.database_name}}"
+          DB_PASS="${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
+          CLOUD_SQL_INSTANCE="${{ steps.tf.outputs.cloud_sql_connection }}"
+          DATABASE_URI_SOCKET="postgresql://${DB_USER}:${DB_PASS}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_INSTANCE}"
+
+          update_secret_value "DATABASE_URI" "${DATABASE_URI_SOCKET}"
+          update_secret_value "SECRET_KEY" "${{ env.SECRET_KEY }}"
+          update_secret_value "SPOTIFY_CLIENT_ID" "${{ env.SPOTIFY_CLIENT_ID }}"
+          update_secret_value "SPOTIFY_CLIENT_SECRET" "${{ env.SPOTIFY_CLIENT_SECRET }}"
+          update_secret_value "SPOTIFY_REDIRECT_URL" "${{ steps.tf.outputs.cloud_run_url }}"
+          update_secret_value "EXERCISE_API_KEY" "${{ env.EXERCISE_API_KEY }}"
+          update_secret_value "EXERCISE_API_HOST" "${{ env.EXERCISE_API_HOST }}"
+          update_secret_value "API_URL" "${{ steps.tf.outputs.cloud_run_url }}"
+          update_secret_value "GEMINI_API_KEY" "${{ env.GEMINI_API_KEY }}"
+          update_secret_value "DEFAULT_SPOTIFY_USER_PASSWORD" "${{ env.DEFAULT_SPOTIFY_USER_PASSWORD }}"
+          
+          echo ""
+          echo "✅ All secrets updated successfully"
 
       # Build & push the image via Cloud Build (offloads build work to GCP and uses Artifact Registry)
       - name: "Build and Push Container with Cloud Build"
-        env:
-          GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}" # may be email or full resource name
         run: |-
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          SA_RAW="${GCP_SERVICE_ACCOUNT}"
-          # If no service account provided, submit without --service-account
-          if [[ -z "${SA_RAW}" ]]; then
-            echo "No GCP_SERVICE_ACCOUNT secret provided — submitting without explicit service account"
-            gcloud builds submit --project="${{ env.PROJECT_ID }}" --tag "${IMAGE}" --gcs-log-dir=gs://sync-n-sweat-build-logs-bucket .
-            exit $?
-          fi
-
-          # Normalize: if value looks like an email, convert to full resource name
-          if [[ "${SA_RAW}" == *"@"* ]]; then
-            SA="projects/${{ env.PROJECT_ID }}/serviceAccounts/${SA_RAW}"
-          else
-            SA="${SA_RAW}"
-          fi
-
-          # Basic validation
-          if [[ "${SA}" != projects/*/serviceAccounts/* ]]; then
-            echo "Invalid service account format in GCP_SERVICE_ACCOUNT secret"
-            exit 1
-          fi
-
-          # Submit using the normalized service account
-          gcloud builds submit --project="${{ env.PROJECT_ID }}" --tag "${IMAGE}" --service-account="${SA}" --gcs-log-dir=gs://sync-n-sweat-build-logs-bucket .
+          IMAGE="${{ steps.tf.outputs.artifact_registry_url }}/${{ steps.tf.outputs.service_name }}:${{ github.sha }}"
+          
+          echo "Building and pushing image: ${IMAGE}"
+          gcloud builds submit \
+            --project="${{ steps.tf.outputs.project_id }}" \
+            --tag "${IMAGE}" \
+            --service-account="${{ steps.tf.outputs.service_account }}" \
+            --gcs-log-dir=gs://${{ secrets.GCP_BUCKET_NAME }} \
+            .
 
       - name: "Deploy to Cloud Run"
         uses: "google-github-actions/deploy-cloudrun@v2"
         with:
-          service: "${{ env.SERVICE_NAME }}"
-          region: "${{ env.REGION }}"
-          image: "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          service: "${{ steps.tf.outputs.service_name }}"
+          region: "${{ steps.tf.outputs.region }}"
+          image: "${{ steps.tf.outputs.artifact_registry_url }}/${{ steps.tf.outputs.service_name }}:${{ github.sha }}"
           flags: |
             --port=8000
-            --add-cloudsql-instances=${{ env.PROJECT_ID }}:${{ env.REGION }}:${{ env.CLOUD_SQL_INSTANCE_ID }}
-            --service-account="${{ env.SERVICE_ACCOUNT }}"
+            --add-cloudsql-instances=${{ steps.tf.outputs.cloud_sql_connection }}
+            --service-account="${{ steps.tf.outputs.cloudrun_service_account }}"
             --concurrency=50
             --memory=512Mi
           # Use full Secret Manager resource names for clarity and tighter access control

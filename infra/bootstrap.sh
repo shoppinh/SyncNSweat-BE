@@ -30,10 +30,13 @@ if ! command -v terraform &> /dev/null; then
     exit 1
 fi
 
-# Get project ID from terraform.tfvars or prompt
+# Get project ID, region,github_repo, db_password and bucket name from terraform.tfvars or prompt
 if [ -f "terraform.tfvars" ]; then
     PROJECT_ID=$(grep 'project_id' terraform.tfvars | cut -d'"' -f2)
     REGION=$(grep 'region' terraform.tfvars | cut -d'"' -f2)
+    GITHUB_REPO=$(grep 'github_repo' terraform.tfvars | cut -d'"' -f2)
+    DB_PASSWORD=$(grep 'db_password' terraform.tfvars | cut -d'"' -f2)
+    BUCKET_NAME=$(grep 'bucket_name' terraform.tfvars | cut -d'"' -f2)
 fi
 
 if [ -z "$PROJECT_ID" ]; then
@@ -44,12 +47,26 @@ if [ -z "$REGION" ]; then
     read -p "Enter GCP Region (e.g., us-central1): " REGION
 fi
 
-BUCKET_NAME="sync-n-sweat-terraform-state"
+if [ -z "$GITHUB_REPO" ]; then
+    read -p "Enter GitHub Repository (e.g., user/repo): " GITHUB_REPO
+fi
+
+if [ -z "$DB_PASSWORD" ]; then
+    read -s -p "Enter Database Password: " DB_PASSWORD
+    echo ""
+fi
+
+if [ -z "$BUCKET_NAME" ]; then
+    read -p "Enter GCS Bucket Name for Terraform State: " BUCKET_NAME
+fi
+
 
 echo ""
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Project ID: $PROJECT_ID"
 echo "  Region: $REGION"
+echo "  GitHub Repo: $GITHUB_REPO"
+echo "  Database Password: [HIDDEN]"
 echo "  Bucket Name: $BUCKET_NAME"
 echo ""
 
@@ -90,8 +107,8 @@ echo -e "${YELLOW}Step 5: Creating infrastructure (including bucket resource)...
 terraform apply \
   -var="project_id=$PROJECT_ID" \
   -var="region=$REGION" \
-  -var="github_repo=shoppinh/SyncNSweat-BE" \
-  -var="db_password=temp-password-change-me" \
+  -var="github_repo=$GITHUB_REPO" \
+  -var="db_password=$DB_PASSWORD" \
   -target=google_storage_bucket.terraform_state \
   -target=google_storage_bucket_iam_member.terraform_state_admin
 

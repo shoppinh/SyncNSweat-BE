@@ -10,4 +10,4 @@ terraform {
     bucket = "sync-n-sweat-terraform-state"
     prefix = "terraform/state"
   }
-}
+# }

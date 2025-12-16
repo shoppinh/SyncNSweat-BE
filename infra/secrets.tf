@@ -14,6 +14,10 @@ resource "google_secret_manager_secret" "secrets" {
   lifecycle {
     prevent_destroy = false
   }
+
+  depends_on = [
+    google_project_service.services["secretmanager.googleapis.com"]
+  ]
 }
 
 # Grant Cloud Run service account access to secrets
