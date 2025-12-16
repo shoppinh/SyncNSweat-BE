@@ -14,6 +14,9 @@ env:
   SERVICE_NAME: "${{ secrets.GCP_SERVICE_NAME }}" # TODO: update to your service name
   SERVICE_REGISTRY: "${{ secrets.GCP_SERVICE_REGISTRY }}"
   CLOUD_SQL_INSTANCE_ID: "${{ secrets.GCP_CLOUD_SQL_INSTANCE_ID }}"
+  CLOUD_SQL_DB_PASSWORD: "${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
+  SERVICE_ACCOUNT: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
+  WORKLOAD_IDENTITY_PROVIDER: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
 
 jobs:
   deploy:
@@ -34,13 +37,35 @@ jobs:
         name: "Authenticate to Google Cloud (Workload Identity)"
         uses: "google-github-actions/auth@v2"
         with:
-          workload_identity_provider: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
-          service_account: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
+          workload_identity_provider: "${{ env.WORKLOAD_IDENTITY_PROVIDER }}"
+          service_account: "${{ env.SERVICE_ACCOUNT }}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+      - name: Terraform Init
+        working-directory: infra
+        run: terraform init
+      - name: Terraform Plan
+        working-directory: infra
+        run: |
+          terraform plan \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="region=${{ env.REGION }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="db_password=${{ env.CLOUD_SQL_DB_PASSWORD }}"
+      - name: Terraform Apply
+        working-directory: infra
+        run: |
+          terraform apply -auto-approve \
+            -var="project_id=${{ env.PROJECT_ID }}" \
+            -var="region=${{ env.REGION }}" \
+            -var="github_repo=${{ github.repository }}" \
+            -var="db_password=${{ env.CLOUD_SQL_DB_PASSWORD }}"
 
       # Build & push the image via Cloud Build (offloads build work to GCP and uses Artifact Registry)
       - name: "Build and Push Container with Cloud Build"
         env:
-          GCP_SERVICE_ACCOUNT: "${{ secrets.GCP_SERVICE_ACCOUNT }}" # may be email or full resource name
+          GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}" # may be email or full resource name
         run: |-
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_REGISTRY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
           SA_RAW="${GCP_SERVICE_ACCOUNT}"
@@ -76,7 +101,7 @@ jobs:
           flags: |
             --port=8000
             --add-cloudsql-instances=${{ env.PROJECT_ID }}:${{ env.REGION }}:${{ env.CLOUD_SQL_INSTANCE_ID }}
-            --service-account="${{ secrets.GCP_SERVICE_ACCOUNT }}"
+            --service-account="${{ env.SERVICE_ACCOUNT }}"
             --concurrency=50
             --memory=512Mi
           # Use full Secret Manager resource names for clarity and tighter access control
