@@ -7,7 +7,7 @@ provider "google" {
 # Note: Uncomment AFTER running bootstrap.sh
 terraform {
   backend "gcs" {
-    bucket = "sync-n-sweat-terraform-state"
+    bucket = "syncnsweat-terraform-state-syncnsweat-106"
     prefix = "terraform/state"
   }
 }

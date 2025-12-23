@@ -1,6 +1,6 @@
 # GCS bucket for Terraform state
 resource "google_storage_bucket" "terraform_state" {
-  name          = "sync-n-sweat-terraform-state"
+  name          = "syncnsweat-terraform-state-${var.project_id}"
   location      = var.region
   force_destroy = false
 

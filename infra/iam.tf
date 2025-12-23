@@ -1,5 +1,5 @@
 resource "google_service_account" "github_actions" {
-  account_id   = "github-actions-sa"
+  account_id   = "github-actions-sa-runner"
   display_name = "GitHub Actions Service Account"
 }
 
@@ -10,7 +10,9 @@ resource "google_project_iam_member" "roles" {
     "roles/cloudsql.client",
     "roles/secretmanager.secretAccessor",
     "roles/secretmanager.admin",  # Needed to create/update secrets via gcloud
-    "roles/iam.serviceAccountUser"
+    "roles/iam.serviceAccountUser",
+    "roles/storage.admin",        # Allow creating/managing GCS buckets/objects for Terraform
+    "roles/cloudbuild.builds.editor" # Allow triggering Cloud Build (gcloud builds submit)
   ])
 
   project = var.project_id
