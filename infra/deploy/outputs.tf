@@ -108,3 +108,12 @@ output "workload_identity_provider" {
   description = "Workload Identity Provider resource name (from bootstrap)"
   value       = data.terraform_remote_state.bootstrap.outputs.workload_identity_provider
 }
+
+# ========================================
+# Storage Outputs
+# ========================================
+
+output "cloudbuild_logs_bucket" {
+  description = "Cloud Build logs bucket name"
+  value       = google_storage_bucket.cloudbuild_logs.name
+}
