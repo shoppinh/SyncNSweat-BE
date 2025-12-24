@@ -112,6 +112,7 @@ jobs:
           echo "secret_names=$(terraform output -json secret_names)" >> $GITHUB_OUTPUT
           echo "database_user=$(terraform output -raw database_user)" >> $GITHUB_OUTPUT
           echo "database_name=$(terraform output -raw database_name)" >> $GITHUB_OUTPUT
+          echo "cloudbuild_logs_bucket=$(terraform output -raw cloudbuild_logs_bucket)" >> $GITHUB_OUTPUT
 
       # ========================================
       # Update Secret Values in Secret Manager
@@ -173,8 +174,8 @@ jobs:
           gcloud builds submit \
             --project="${{ steps.tf.outputs.project_id }}" \
             --tag "${IMAGE}" \
-            --service-account="${{ steps.tf.outputs.github_actions_sa }}" \
-            --gcs-log-dir=gs://${{ secrets.GCP_BUCKET_NAME }} \
+            --service-account="projects/${{ steps.tf.outputs.project_id }}/serviceAccounts/${{ steps.tf.outputs.github_actions_sa }}" \
+            --gcs-log-dir="gs://${{ steps.tf.outputs.cloudbuild_logs_bucket }}" \
             .
 
       # ========================================

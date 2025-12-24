@@ -67,15 +67,13 @@ resource "google_service_account" "cloudrun" {
 
 resource "google_project_iam_member" "github_actions_roles" {
   for_each = toset([
-    "roles/artifactregistry.writer",            # Push Docker images
+    "roles/artifactregistry.admin",             # Create repository, push Docker images
     "roles/run.developer",                      # Deploy Cloud Run services
-    "roles/cloudsql.client",                    # Connect to Cloud SQL (for migrations)
-    "roles/secretmanager.secretAccessor",       # Read secret values
-    "roles/secretmanager.secretVersionManager", # Create/update secret versions
-    "roles/secretmanager.viewer",               # View secret metadata (describe/list)
+    "roles/cloudsql.admin",                     # Create/manage Cloud SQL instances
+    "roles/secretmanager.admin",                # Create/manage secrets
     "roles/iam.serviceAccountUser",             # Use service accounts
     "roles/storage.admin",                      # Access Terraform state bucket
-    "roles/cloudbuild.builds.editor"            # Trigger Cloud Build
+    "roles/cloudbuild.builds.editor",           # Trigger Cloud Build
   ])
 
   project = var.project_id
@@ -90,8 +88,8 @@ resource "google_project_iam_member" "github_actions_roles" {
 
 resource "google_project_iam_member" "cloudrun_roles" {
   for_each = toset([
-    "roles/cloudsql.client",              # Connect to Cloud SQL
-    "roles/secretmanager.secretAccessor"  # Read application secrets
+    "roles/cloudsql.client",             # Connect to Cloud SQL
+    "roles/secretmanager.secretAccessor" # Read application secrets
   ])
 
   project = var.project_id
@@ -213,10 +211,10 @@ resource "google_secret_manager_secret_version" "bootstrap_complete" {
   secret = google_secret_manager_secret.bootstrap_complete.id
 
   secret_data = jsonencode({
-    completed_at = timestamp()
+    completed_at      = timestamp()
     bootstrap_version = "1.0"
-    project_id = var.project_id
-    region = var.region
+    project_id        = var.project_id
+    region            = var.region
   })
 }
 

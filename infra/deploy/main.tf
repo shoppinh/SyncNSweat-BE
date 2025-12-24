@@ -113,3 +113,25 @@ resource "google_secret_manager_secret" "secrets" {
 
   # No depends_on for google_project_service - API enabled in bootstrap
 }
+
+# ========================================
+# Cloud Build Logs Bucket
+# ========================================
+
+resource "google_storage_bucket" "cloudbuild_logs" {
+  name          = "${var.project_id}-cloudbuild-logs"
+  location      = var.region
+  project       = var.project_id
+  force_destroy = true
+
+  uniform_bucket_level_access = true
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
