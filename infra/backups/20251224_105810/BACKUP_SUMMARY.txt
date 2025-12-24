@@ -1,0 +1,40 @@
+Backup Summary
+==============
+
+Timestamp: Wed Dec 24 10:59:19 +07 2025
+Project ID: syncnsweat-106
+SQL Instance: syncnsweat-db
+
+Backup Location: /Users/kien.mac/Documents/Dev/kien.mac/SyncNSweat-BE/infra/backups/20251224_105810
+
+Files Backed Up:
+----------------
+total 424
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users     0B Dec 24 10:59 BACKUP_SUMMARY.txt
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users   2.2K Dec 24 10:59 SECRET_VALUES.md
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users    70K Dec 24 10:58 remote-terraform.tfstate
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users   153B Dec 24 10:59 sql-backup-list.txt
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users   150B Dec 24 10:59 sql-backup.log
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users     0B Dec 24 10:58 terraform.tfstate
+-rw-r--r--@ 1 kien.mac  NITECO\Domain Users    69K Dec 24 10:58 terraform.tfstate.backup
+
+Next Steps:
+-----------
+1. ✅ Terraform state backed up
+2. ✅ Cloud SQL backup created
+3. ⚠️  MANUAL: Populate SECRET_VALUES.md with actual secret values
+4. ⚠️  MANUAL: Verify all backups are complete before proceeding
+
+Restoration Instructions:
+-------------------------
+If you need to rollback after migration:
+
+1. Restore Terraform state:
+   terraform state push /Users/kien.mac/Documents/Dev/kien.mac/SyncNSweat-BE/infra/backups/20251224_105810/terraform.tfstate
+
+2. Restore Cloud SQL from backup:
+   gcloud sql backups restore [BACKUP_ID] --backup-instance=syncnsweat-db
+
+3. Restore secrets:
+   Use SECRET_VALUES.md to recreate secrets in Secret Manager
+

@@ -1,0 +1,2 @@
+ID             WINDOW_START_TIME              ERROR  STATUS      INSTANCE
+1766548700527  2025-12-24T03:58:20.527+00:00  -      SUCCESSFUL  syncnsweat-db

@@ -51,3 +51,39 @@ htmlcov/
 
 # Database
 *.sqlite3
+#######################################
+# Terraform
+#######################################
+
+# Local Terraform state (NEVER commit)
+*.tfstate
+*.tfstate.*
+
+# Terraform plan files
+*.tfplan
+*.plan
+
+# Terraform working directory
+.terraform/
+
+# Terraform lock file (optional – see note below)
+.terraform.lock.hcl
+
+# Variable files (often contain secrets)
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform CLI config
+.terraformrc
+terraform.rc
+
+# Crash logs
+crash.log
+crash.*.log
