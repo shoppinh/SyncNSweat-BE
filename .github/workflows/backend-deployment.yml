@@ -1,7 +1,21 @@
 name: "Build and Deploy to Cloud Run"
+
+# ========================================
+# CI/CD Workflow for Deploy Module Only
+# ========================================
+# This workflow ONLY deploys application infrastructure.
+# Bootstrap (IAM, APIs, service accounts) must be run manually by an admin.
+#
+# Security model:
+# - Uses Workload Identity Federation (no service account keys)
+# - Runs with limited permissions (roles defined in bootstrap)
+# - Cannot modify project IAM or enable APIs
+# ========================================
+
 concurrency:
   group: deploy-cloudrun-${{ github.ref }}
   cancel-in-progress: true
+
 on:
   push:
     branches: [main]
@@ -9,8 +23,7 @@ on:
     branches: [main]
 
 env:
-  # Only actual secrets - infrastructure values come from Terraform outputs
-  # Application secrets
+  # Application secrets - deployed to Secret Manager, not used by Terraform
   SECRET_KEY: "${{ secrets.SECRET_KEY }}"
   SPOTIFY_CLIENT_ID: "${{ secrets.SPOTIFY_CLIENT_ID }}"
   SPOTIFY_CLIENT_SECRET: "${{ secrets.SPOTIFY_CLIENT_SECRET }}"
@@ -38,60 +51,79 @@ jobs:
           workload_identity_provider: "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}"
           service_account: "${{ secrets.GCP_SERVICE_ACCOUNT }}"
 
-      # Configure Workload Identity Federation and generate an access token.
-      # See https://github.com/google-github-actions/auth for options.
-      
+      # Install gcloud CLI (auth action doesn't always include all gcloud commands)
+      - name: "Set up Cloud SDK"
+        uses: "google-github-actions/setup-gcloud@v2"
 
+      # ========================================
+      # Validate Bootstrap Completion
+      # ========================================
+      - name: "Validate Bootstrap Completion"
+        working-directory: infra/deploy
+        run: |
+          echo "🔍 Validating that bootstrap module has been completed..."
+          
+          # Run validation
+          ./validate.sh "${{ secrets.GCP_PROJECT_ID }}"
+
+      # ========================================
+      # Deploy Application Infrastructure
+      # ========================================
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false  # Needed to parse outputs as JSON
         
-      - name: Terraform Init
-        working-directory: infra
+      - name: Terraform Init (Deploy Module)
+        working-directory: infra/deploy
         run: terraform init
-        
-      - name: Terraform Plan
-        working-directory: infra
+
+      - name: Terraform Plan (Deploy Module)
+        working-directory: infra/deploy
         run: |
           terraform plan \
             -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
             -var="region=${{ secrets.GCP_REGION }}" \
-            -var="github_repo=${{ github.repository }}" \
-            -var="db_password=${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
-            
-      - name: Terraform Apply
-        working-directory: infra
+            -var="db_password=${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}" \
+            -out=tfplan
+        
+      - name: Terraform Apply (Deploy Module Only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+        working-directory: infra/deploy
         run: |
-          terraform apply -auto-approve \
-            -var="project_id=${{ secrets.GCP_PROJECT_ID }}" \
-            -var="region=${{ secrets.GCP_REGION }}" \
-            -var="github_repo=${{ github.repository }}" \
-            -var="db_password=${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
+          terraform apply -auto-approve tfplan 
 
-      # Get ALL infrastructure values from Terraform outputs
+      # ========================================
+      # Get Terraform Outputs
+      # ========================================
       - name: "Get Terraform Outputs"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: tf
-        working-directory: infra
+        working-directory: infra/deploy
         run: |
           echo "project_id=$(terraform output -raw project_id)" >> $GITHUB_OUTPUT
           echo "region=$(terraform output -raw region)" >> $GITHUB_OUTPUT
           echo "service_name=$(terraform output -raw cloud_run_service_name)" >> $GITHUB_OUTPUT
           echo "artifact_registry_url=$(terraform output -raw artifact_registry_url)" >> $GITHUB_OUTPUT
-          echo "service_account=$(terraform output -raw service_account_email)" >> $GITHUB_OUTPUT
-          echo "cloudrun_service_account=$(terraform output -raw cloudrun_service_account)" >> $GITHUB_OUTPUT
+          echo "github_actions_sa=$(terraform output -raw github_actions_service_account)" >> $GITHUB_OUTPUT
+          echo "cloudrun_service_account=$(terraform output -raw cloud_run_service_account)" >> $GITHUB_OUTPUT
           echo "cloud_run_url=$(terraform output -raw cloud_run_url)" >> $GITHUB_OUTPUT
           echo "cloud_sql_connection=$(terraform output -raw cloud_sql_connection_name)" >> $GITHUB_OUTPUT
           echo "secret_names=$(terraform output -json secret_names)" >> $GITHUB_OUTPUT
+          echo "database_user=$(terraform output -raw database_user)" >> $GITHUB_OUTPUT
+          echo "database_name=$(terraform output -raw database_name)" >> $GITHUB_OUTPUT
 
-      # Already authenticated above (needed for Terraform backend access).
-      # Update secret VALUES in GCP Secret Manager (Terraform already created the resources)
+      # ========================================
+      # Update Secret Values in Secret Manager
+      # ========================================
+      # Terraform creates empty secret containers; this step populates values
       - name: "Update Secret Values in GCP Secret Manager"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           # Get secret names from Terraform outputs
           SECRET_NAMES='${{ steps.tf.outputs.secret_names }}'
           
-          # Function to update a secret value (assumes secret resource already exists from Terraform)
+          # Function to update a secret value (Terraform created the secret resource)
           update_secret_value() {
             SECRET_NAME=$1
             SECRET_VALUE=$2
@@ -107,14 +139,14 @@ jobs:
               --data-file=-
           }
           
-          # Update all secret values (only those used in application)
-          # Construct a socket-style DATABASE_URI so Cloud Run uses the built-in Cloud SQL connector
+          # Construct socket-style DATABASE_URI for Cloud Run's built-in Cloud SQL connector
           DB_USER="${{steps.tf.outputs.database_user}}"
           DB_NAME="${{steps.tf.outputs.database_name}}"
           DB_PASS="${{ secrets.GCP_CLOUD_SQL_DB_PASSWORD }}"
           CLOUD_SQL_INSTANCE="${{ steps.tf.outputs.cloud_sql_connection }}"
           DATABASE_URI_SOCKET="postgresql://${DB_USER}:${DB_PASS}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_INSTANCE}"
 
+          # Update all secret values
           update_secret_value "DATABASE_URI" "${DATABASE_URI_SOCKET}"
           update_secret_value "SECRET_KEY" "${{ env.SECRET_KEY }}"
           update_secret_value "SPOTIFY_CLIENT_ID" "${{ env.SPOTIFY_CLIENT_ID }}"
@@ -129,8 +161,11 @@ jobs:
           echo ""
           echo "✅ All secrets updated successfully"
 
-      # Build & push the image via Cloud Build (offloads build work to GCP and uses Artifact Registry)
+      # ========================================
+      # Build and Push Container Image
+      # ========================================
       - name: "Build and Push Container with Cloud Build"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |-
           IMAGE="${{ steps.tf.outputs.artifact_registry_url }}/${{ steps.tf.outputs.service_name }}:${{ github.sha }}"
           
@@ -138,11 +173,16 @@ jobs:
           gcloud builds submit \
             --project="${{ steps.tf.outputs.project_id }}" \
             --tag "${IMAGE}" \
-            --service-account="${{ steps.tf.outputs.service_account }}" \
+            --service-account="${{ steps.tf.outputs.github_actions_sa }}" \
             --gcs-log-dir=gs://${{ secrets.GCP_BUCKET_NAME }} \
             .
 
+      # ========================================
+      # Deploy to Cloud Run
+      # ========================================
+
       - name: "Deploy to Cloud Run"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: "google-github-actions/deploy-cloudrun@v2"
         with:
           service: "${{ steps.tf.outputs.service_name }}"
