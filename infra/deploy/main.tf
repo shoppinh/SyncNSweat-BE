@@ -47,15 +47,6 @@ resource "google_cloud_run_service" "backend" {
   # No depends_on for google_project_service - APIs enabled in bootstrap
 }
 
-# Allow unauthenticated access to Cloud Run service
-resource "google_cloud_run_service_iam_member" "invoker_allUsers" {
-  project  = var.project_id
-  location = var.region
-  service  = google_cloud_run_service.backend.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
 # ========================================
 # Cloud SQL Database
 # ========================================
@@ -121,15 +112,4 @@ resource "google_secret_manager_secret" "secrets" {
   }
 
   # No depends_on for google_project_service - API enabled in bootstrap
-}
-
-# Grant Cloud Run service account access to secrets
-# This is resource-level IAM (not project-level), so it stays in deploy
-resource "google_secret_manager_secret_iam_member" "cloudrun_access" {
-  for_each = toset(var.secret_names)
-
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.secrets[each.value].id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${data.terraform_remote_state.bootstrap.outputs.cloudrun_service_account_email}"
 }
