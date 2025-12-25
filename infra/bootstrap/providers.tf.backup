@@ -6,7 +6,7 @@ provider "google" {
 # Backend configuration - uncomment after initial apply and state migration
 # terraform {
 #   backend "gcs" {
-#     bucket = "syncnsweat-terraform-state-syncnsweat-106"  # Update with actual bucket name
+#     bucket = "syncnsweat-terraform-state-syncnsweat-107"  # Update with actual bucket name
 #     prefix = "terraform/bootstrap/state"
 #   }
 # }

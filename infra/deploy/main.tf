@@ -47,6 +47,15 @@ resource "google_cloud_run_service" "backend" {
   # No depends_on for google_project_service - APIs enabled in bootstrap
 }
 
+# Allow unauthenticated access to Cloud Run service
+resource "google_cloud_run_service_iam_member" "invoker_allUsers" {
+  project  = var.project_id
+  location = var.region
+  service  = google_cloud_run_service.backend.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # ========================================
 # Cloud SQL Database
 # ========================================

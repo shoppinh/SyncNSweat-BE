@@ -6,7 +6,7 @@ provider "google" {
 # Remote backend for Terraform state
 terraform {
   backend "gcs" {
-    bucket = "syncnsweat-terraform-state-syncnsweat-107"  # Update with actual bucket name
+    bucket = "syncnsweat-terraform-state-syncnsweat-100"  # Update with actual bucket name
     prefix = "terraform/deploy/state"
   }
 }

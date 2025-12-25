@@ -30,7 +30,6 @@ Required GitHub secrets (values from bootstrap outputs):
 - `GCP_SERVICE_ACCOUNT`
 - `GCP_PROJECT_ID`
 - `GCP_REGION`
-- `GCP_BUCKET_NAME`
 - `GCP_CLOUD_SQL_DB_PASSWORD`
 
 Application secrets (deployed to Secret Manager):

@@ -90,7 +90,6 @@ output "github_secrets_checklist" {
   GCP_SERVICE_ACCOUNT            = ${google_service_account.github_actions.email}
   GCP_PROJECT_ID                 = ${var.project_id}
   GCP_REGION                     = ${var.region}
-  GCP_BUCKET_NAME                = ${google_storage_bucket.terraform_state.name}
   GCP_CLOUD_SQL_DB_PASSWORD      = <your-database-password>
   
   Application secrets (managed via Secret Manager):

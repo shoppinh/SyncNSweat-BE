@@ -67,12 +67,15 @@ resource "google_service_account" "cloudrun" {
 
 resource "google_project_iam_member" "github_actions_roles" {
   for_each = toset([
-    "roles/artifactregistry.admin",             # Create repository, push Docker images
-    "roles/run.developer",                      # Deploy Cloud Run services
-    "roles/cloudsql.admin",                     # Create/manage Cloud SQL instances
-    "roles/secretmanager.admin",                # Create/manage secrets
+    "roles/artifactregistry.repoAdmin",         # Create repository, push Docker images
+    "roles/artifactregistry.writer",            # Push Docker images
+    "roles/run.admin",                          # Deploy Cloud Run services and manage IAM
+    "roles/cloudsql.editor",                    # Create/manage Cloud SQL instances
+    "roles/secretmanager.secretVersionManager", # Create/manage secrets
+    "roles/secretmanager.secretAccessor",       # Read secrets for deployment
+    "roles/secretmanager.viewer",               # View Secret Manager metadata
     "roles/iam.serviceAccountUser",             # Use service accounts
-    "roles/storage.admin",                      # Access Terraform state bucket
+    "roles/storage.objectAdmin",                # Access Terraform state bucket
     "roles/cloudbuild.builds.editor",           # Trigger Cloud Build
   ])
 
@@ -216,25 +219,4 @@ resource "google_secret_manager_secret_version" "bootstrap_complete" {
     project_id        = var.project_id
     region            = var.region
   })
-}
-
-# Note: Cloud Run SA already has roles/secretmanager.secretAccessor at project level
-# (see google_project_iam_member.cloudrun_roles above), so no additional IAM bindings needed
-
-# ========================================
-# Cloud Run Public Access
-# ========================================
-# Allow unauthenticated access to Cloud Run service
-# This must be in bootstrap because GitHub Actions SA cannot manage IAM
-
-resource "google_cloud_run_service_iam_member" "invoker_allUsers" {
-  project  = var.project_id
-  location = var.region
-  service  = var.service_name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-
-  depends_on = [
-    google_project_service.services["run.googleapis.com"]
-  ]
 }

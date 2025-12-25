@@ -295,7 +295,6 @@ GCP_WORKLOAD_IDENTITY_PROVIDER = <from terraform output>
 GCP_SERVICE_ACCOUNT            = <from terraform output>
 GCP_PROJECT_ID                 = <your project ID>
 GCP_REGION                     = <your region>
-GCP_BUCKET_NAME                = <state bucket name>
 GCP_CLOUD_SQL_DB_PASSWORD      = <choose secure password>
 ```
 

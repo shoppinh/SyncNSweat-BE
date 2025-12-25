@@ -98,7 +98,6 @@ Also document GitHub Actions secrets (stored in GitHub, not GCP):
 - GCP_WORKLOAD_IDENTITY_PROVIDER
 - GCP_SERVICE_ACCOUNT
 - GCP_CLOUD_SQL_DB_PASSWORD
-- GCP_BUCKET_NAME
 
 These can be retrieved from: https://github.com/YOUR_ORG/YOUR_REPO/settings/secrets/actions
 

@@ -8,7 +8,7 @@ data "terraform_remote_state" "bootstrap" {
   backend = "gcs"
 
   config = {
-    bucket = "syncnsweat-terraform-state-syncnsweat-107"  # Update with actual bucket name
+    bucket = "syncnsweat-terraform-state-syncnsweat-100"  # Update with actual bucket name
     prefix = "terraform/bootstrap/state"
   }
 }

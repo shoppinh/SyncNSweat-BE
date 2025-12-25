@@ -88,7 +88,6 @@ Required secrets (values from Terraform outputs):
 - `GCP_SERVICE_ACCOUNT` - GitHub Actions service account email
 - `GCP_PROJECT_ID` - Your GCP project ID
 - `GCP_REGION` - Your GCP region
-- `GCP_BUCKET_NAME` - Terraform state bucket name
 - `GCP_CLOUD_SQL_DB_PASSWORD` - Database password (choose a secure value)
 
 Application secrets (store in GitHub, deployed to Secret Manager by CI/CD):
