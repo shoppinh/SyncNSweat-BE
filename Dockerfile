@@ -18,6 +18,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 # Copy source
 COPY . /app
 
+
 # Final stage: smaller runtime image
 FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 PORT=8000
