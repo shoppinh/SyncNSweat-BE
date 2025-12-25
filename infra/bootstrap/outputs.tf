@@ -59,6 +59,11 @@ output "region" {
   value       = var.region
 }
 
+output "github_repo" {
+  description = "GitHub repository in format: owner/repo"
+  value       = var.github_repo
+}
+
 # ========================================
 # Bootstrap Completion Marker
 # ========================================

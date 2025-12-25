@@ -67,17 +67,13 @@ resource "google_service_account" "cloudrun" {
 
 resource "google_project_iam_member" "github_actions_roles" {
   for_each = toset([
-    "roles/artifactregistry.repoAdmin",         # Create repository, push Docker images
-    "roles/artifactregistry.writer",            # Push Docker images
-    "roles/run.admin",                          # Deploy Cloud Run services and manage IAM
-    "roles/cloudsql.editor",                    # Create/manage Cloud SQL instances
-    "roles/secretmanager.secretVersionManager", # Create/manage secrets
-    "roles/secretmanager.secretAccessor",       # Read secrets for deployment
-    "roles/secretmanager.viewer",               # View Secret Manager metadata
-    "roles/iam.serviceAccountUser",             # Use service accounts
-    "roles/storage.objectAdmin",                # Access Terraform state bucket
-    "roles/storage.bucketViewer",               # View bucket metadata
-    "roles/cloudbuild.builds.editor",           # Trigger Cloud Build
+    "roles/artifactregistry.admin",   # Create repo, list all repo, Push/pull images to/from Artifact Registry
+    "roles/run.admin",                # Deploy Cloud Run services and manage IAM
+    "roles/cloudsql.admin",           # Create/manage Cloud SQL instances
+    "roles/secretmanager.admin",      # Create/manage secrets, retrieve secret metadata
+    "roles/iam.serviceAccountUser",   # Use service accounts
+    "roles/storage.admin",      # Access Terraform state bucket
+    "roles/cloudbuild.builds.editor", # Trigger Cloud Build
   ])
 
   project = var.project_id

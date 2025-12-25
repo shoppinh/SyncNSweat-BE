@@ -44,12 +44,6 @@ if [ ! -f "$SCRIPT_DIR/terraform.tfvars" ]; then
   exit 1
 fi
 
-# Confirm before proceeding
-read -p "Do you want to proceed with bootstrap? (yes/no): " confirm
-if [ "$confirm" != "yes" ]; then
-  echo "❌ Bootstrap cancelled"
-  exit 0
-fi
 
 echo ""
 echo "========================================"
@@ -152,38 +146,178 @@ fi
 
 echo ""
 echo "========================================"
+echo "Step 6: GitHub Secrets Configuration"
+echo "========================================"
+echo ""
+
+# Check if gh CLI is installed
+if ! command -v gh &> /dev/null; then
+  echo "❌ Error: GitHub CLI (gh) is not installed"
+  echo ""
+  echo "Install it with:"
+  echo "  brew install gh"
+  echo ""
+  echo "Then manually configure secrets at:"
+  echo "  https://github.com/$(terraform output -raw github_repo)/settings/secrets/actions"
+  echo ""
+  terraform output github_secrets_checklist
+  exit 1
+fi
+
+# Check if logged in to gh
+if ! gh auth status &> /dev/null; then
+  echo "⚠️  Not logged in to GitHub CLI"
+  echo ""
+  read -p "Login to GitHub CLI now? (yes/no): " gh_login
+  if [ "$gh_login" == "yes" ]; then
+    gh auth login
+  else
+    echo ""
+    echo "❌ Cannot configure secrets without authentication"
+    echo ""
+    echo "Login later with: gh auth login"
+    echo "Then manually configure secrets at:"
+    echo "  https://github.com/$(terraform output -raw github_repo)/settings/secrets/actions"
+    echo ""
+    terraform output github_secrets_checklist
+    exit 1
+  fi
+fi
+
+GITHUB_REPO=$(terraform output -raw github_repo)
+WORKLOAD_IDENTITY_PROVIDER=$(terraform output -raw workload_identity_provider)
+SERVICE_ACCOUNT_EMAIL=$(terraform output -raw github_actions_service_account_email)
+REGION=$(terraform output -raw region)
+
+echo "   Configuring GitHub secrets for repository: $GITHUB_REPO"
+echo ""
+
+# Set secrets using gh CLI
+echo "   Setting GCP_PROJECT_ID..."
+echo "$PROJECT_ID" | gh secret set GCP_PROJECT_ID --repo="$GITHUB_REPO"
+
+echo "   Setting GCP_REGION..."
+echo "$REGION" | gh secret set GCP_REGION --repo="$GITHUB_REPO"
+
+echo "   Setting GCP_WORKLOAD_IDENTITY_PROVIDER..."
+echo "$WORKLOAD_IDENTITY_PROVIDER" | gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo="$GITHUB_REPO"
+
+echo "   Setting GCP_SERVICE_ACCOUNT..."
+echo "$SERVICE_ACCOUNT_EMAIL" | gh secret set GCP_SERVICE_ACCOUNT --repo="$GITHUB_REPO"
+
+
+echo ""
+echo "   ✅ GitHub secrets configured successfully"
+
+
+echo "========================================"
+echo "Step 7: Update Deploy Module Configuration"
+echo "========================================"
+echo ""
+echo "   Updating infra/deploy/providers.tf and data.tf..."
+
+DEPLOY_DIR="$SCRIPT_DIR/../deploy"
+
+# Update providers.tf with the bucket name
+if [ -f "$DEPLOY_DIR/providers.tf" ]; then
+  # Backup the file
+  cp "$DEPLOY_DIR/providers.tf" "$DEPLOY_DIR/providers.tf.backup"
+  
+  # Update bucket name in backend configuration
+  sed -i.bak "s|bucket = \".*\"|bucket = \"$BUCKET_NAME\"|" "$DEPLOY_DIR/providers.tf"
+  rm -f "$DEPLOY_DIR/providers.tf.bak"
+  
+  echo "   ✅ Updated providers.tf with bucket: $BUCKET_NAME"
+else
+  echo "   ⚠️  Warning: $DEPLOY_DIR/providers.tf not found"
+fi
+
+# Update data.tf with the bucket name
+if [ -f "$DEPLOY_DIR/data.tf" ]; then
+  # Backup the file
+  cp "$DEPLOY_DIR/data.tf" "$DEPLOY_DIR/data.tf.backup"
+  
+  # Update bucket name in remote state configuration
+  sed -i.bak "s|bucket = \".*\"|bucket = \"$BUCKET_NAME\"|" "$DEPLOY_DIR/data.tf"
+  rm -f "$DEPLOY_DIR/data.tf.bak"
+  
+  echo "   ✅ Updated data.tf with bucket: $BUCKET_NAME"
+else
+  echo "   ⚠️  Warning: $DEPLOY_DIR/data.tf not found"
+fi
+
+echo ""
+echo "========================================"
+echo "Step 8: Initialize and Validate Deploy Module"
+echo "========================================"
+echo ""
+
+cd "$DEPLOY_DIR"
+echo "   Initializing deploy module..."
+terraform init
+
+echo ""
+echo "   Validating deploy module configuration..."
+terraform validate
+
+echo ""
+echo "   ✅ Deploy module initialized and validated"
+
+cd "$SCRIPT_DIR"
+
+echo ""
+echo "========================================"
+echo "Step 9: Commit Changes to Git"
+echo "========================================"
+echo ""
+
+read -p "Commit changes to git? (yes/no): " git_confirm
+if [ "$git_confirm" == "yes" ]; then
+  cd "$SCRIPT_DIR/../.."
+  
+  git add infra/bootstrap/providers.tf
+  git add infra/bootstrap/main.tf
+  git add infra/deploy/providers.tf
+  git add infra/deploy/data.tf
+
+  
+  echo "   ✅ Changes committed to git"
+  echo ""
+  echo "   Next: Push to GitHub to enable deployment"
+  echo "   Command: git push origin main"
+else
+  echo "   ⚠️  Changes not committed - remember to commit manually"
+fi
+
+echo ""
+echo "========================================"
 echo "✅ Bootstrap Complete!"
 echo "========================================"
 echo ""
+echo ""
+
+echo "========================================"
+echo "📋 Summary & Next Steps"
+echo "========================================"
+echo ""
+echo "✅ Completed:"
+echo "   • Bootstrap infrastructure deployed"
+echo "   • State migrated to GCS bucket"
+echo "   • Deploy module configured and validated"
+echo ""
 echo "📋 Next Steps:"
 echo ""
-echo "1. Configure GitHub Secrets"
+
+
+echo "1. Push Changes to GitHub"
 echo "   -------------------------------------"
-terraform output github_secrets_checklist
+echo "   git push origin main"
 echo ""
 
-echo "2. Update Deploy Module Configuration"
+echo "2. Enable GitHub Actions Deployment"
 echo "   -------------------------------------"
-echo "   Edit infra/deploy/providers.tf and infra/deploy/data.tf"
-echo "   Update the bucket name to: $BUCKET_NAME"
-echo ""
-
-echo "3. Test Deploy Module Locally (Optional)"
-echo "   -------------------------------------"
-echo "   cd ../deploy"
-echo "   terraform init"
-echo "   terraform plan"
-echo ""
-
-echo "4. Commit Changes to Git"
-echo "   -------------------------------------"
-echo "   git add infra/bootstrap/"
-echo "   git commit -m \"Add bootstrap infrastructure\""
-echo ""
-
-echo "5. Enable GitHub Actions Deployment"
-echo "   -------------------------------------"
-echo "   After GitHub secrets are configured, push to trigger deployment"
+echo "   After GitHub secrets are configured, GitHub Actions will"
+echo "   automatically deploy infrastructure on push to main branch"
 echo ""
 
 echo "========================================"
