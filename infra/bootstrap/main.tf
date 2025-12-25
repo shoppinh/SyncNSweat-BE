@@ -76,6 +76,7 @@ resource "google_project_iam_member" "github_actions_roles" {
     "roles/secretmanager.viewer",               # View Secret Manager metadata
     "roles/iam.serviceAccountUser",             # Use service accounts
     "roles/storage.objectAdmin",                # Access Terraform state bucket
+    "roles/storage.bucketViewer",               # View bucket metadata
     "roles/cloudbuild.builds.editor",           # Trigger Cloud Build
   ])
 
