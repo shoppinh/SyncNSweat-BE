@@ -270,3 +270,53 @@ echo "   3. Store backups in a secure location"
 echo "   4. Consider creating an additional database export to GCS"
 echo ""
 echo "================================================"
+echo ""
+
+# ========================================
+# Step 5: Clean Up Old Terraform State (Optional)
+# ========================================
+echo "================================================"
+echo "Step 5: Clean Up Old Terraform State"
+echo "================================================"
+echo ""
+echo "⚠️  After successful migration to bootstrap/deploy split,"
+echo "    you can remove old Terraform state files."
+echo ""
+read -p "Remove old Terraform state files? (yes/no): " cleanup_confirm
+
+if [ "$cleanup_confirm" == "yes" ]; then
+  echo ""
+  echo "   Removing state files from bootstrap folder..."
+  
+  BOOTSTRAP_DIR="$SCRIPT_DIR/bootstrap"
+  if [ -d "$BOOTSTRAP_DIR" ]; then
+    rm -f "$BOOTSTRAP_DIR/terraform.tfstate"
+    rm -f "$BOOTSTRAP_DIR/terraform.tfstate.backup"
+    rm -f "$BOOTSTRAP_DIR/.terraform.lock.hcl"
+    rm -f "$BOOTSTRAP_DIR/terraform.tfstate.local.backup"
+    rm -f "$BOOTSTRAP_DIR/terraform.tfvars"
+    rm -rf "$BOOTSTRAP_DIR/.terraform"
+    echo "   ✅ Removed state files from bootstrap/"
+  fi
+  
+  echo "   Removing state files from deploy folder..."
+  DEPLOY_DIR="$SCRIPT_DIR/deploy"
+  if [ -d "$DEPLOY_DIR" ]; then
+    rm -f "$DEPLOY_DIR/terraform.tfstate"
+    rm -f "$DEPLOY_DIR/terraform.tfstate.backup"
+    rm -f "$DEPLOY_DIR/.terraform.lock.hcl"
+    rm -f "$DEPLOY_DIR/terraform.tfstate.local.backup"
+    rm -f "$DEPLOY_DIR/terraform.tfvars"
+    rm -rf "$DEPLOY_DIR/.terraform"
+    echo "   ✅ Removed state files from deploy/"
+  fi
+  
+  echo ""
+  echo "   ✅ All local Terraform state files removed"
+  echo "   📦 State now managed in GCS buckets only"
+else
+  echo "   ⏭️  Skipped state cleanup"
+fi
+
+echo ""
+echo "================================================"

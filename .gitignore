@@ -84,6 +84,9 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# Bootstrap providers.tf (contains backend config with bucket name)
+infra/bootstrap/providers.tf
+
 # Crash logs
 crash.log
 crash.*.log

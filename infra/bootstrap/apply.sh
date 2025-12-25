@@ -105,7 +105,6 @@ if grep -q "^# terraform {" providers.tf; then
     -e 's/^# }/}/' \
     providers.tf
   
-  rm -f providers.tf.bak
   
   echo "   ✅ Backend configuration enabled"
 fi
@@ -225,7 +224,6 @@ if [ -f "$DEPLOY_DIR/providers.tf" ]; then
   
   # Update bucket name in backend configuration
   sed -i.bak "s|bucket = \".*\"|bucket = \"$BUCKET_NAME\"|" "$DEPLOY_DIR/providers.tf"
-  rm -f "$DEPLOY_DIR/providers.tf.bak"
   
   echo "   ✅ Updated providers.tf with bucket: $BUCKET_NAME"
 else
@@ -239,7 +237,6 @@ if [ -f "$DEPLOY_DIR/data.tf" ]; then
   
   # Update bucket name in remote state configuration
   sed -i.bak "s|bucket = \".*\"|bucket = \"$BUCKET_NAME\"|" "$DEPLOY_DIR/data.tf"
-  rm -f "$DEPLOY_DIR/data.tf.bak"
   
   echo "   ✅ Updated data.tf with bucket: $BUCKET_NAME"
 else
@@ -275,8 +272,6 @@ read -p "Commit changes to git? (yes/no): " git_confirm
 if [ "$git_confirm" == "yes" ]; then
   cd "$SCRIPT_DIR/../.."
   
-  git add infra/bootstrap/providers.tf
-  git add infra/bootstrap/main.tf
   git add infra/deploy/providers.tf
   git add infra/deploy/data.tf
 
