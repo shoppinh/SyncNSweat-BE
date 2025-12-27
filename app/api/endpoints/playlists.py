@@ -1,34 +1,21 @@
 from typing import Any, Dict, List, cast
 
-from app.core.config import settings
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
-from app.models.user import User
-from app.models.profile import Profile
-from app.models.preferences import Preferences
-from app.models.workout import Workout
-from app.services.gemini import GeminiService
-from app.services.spotify import SpotifyService
-from app.services.playlist_selector import PlaylistSelectorService
 from app.core.security import get_current_user
+from app.db.session import get_db
+from app.models.preferences import Preferences
+from app.models.profile import Profile
+from app.models.user import User
+from app.repositories.preferences import PreferencesRepository
+from app.repositories.profile import ProfileRepository
+from app.repositories.workout import WorkoutRepository
+from app.services.gemini import GeminiService
+from app.services.playlist_selector import PlaylistSelectorService
+from app.services.spotify import SpotifyService
 
 router = APIRouter()
-
-
-@router.get("/spotify/auth-url")
-def get_spotify_auth_url(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
-    """
-    Get Spotify authorization URL.
-    """
-    spotify_service = SpotifyService(db)
-    redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
-    auth_url = spotify_service.get_auth_url(redirect_uri, state=str(current_user.id))
-
-    return {"auth_url": auth_url}
 
 
 @router.get("/spotify/recommendations")
@@ -37,18 +24,20 @@ async def get_spotify_recommendations(
     db: Session = Depends(get_db),
 ):
     """
-    Get Spotify playlist recommendations based on user preferences and workout type.
+    Get Spotify playlist recommendations based on user preferences and workout type using Gemini service.
     """
+    
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    
     # Get user profile and preferences
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    profile = profile_repo.get_one_by(user_id=current_user.id)
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
         )
 
-    preferences = (
-        db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-    )
+    preferences = preferences_repo.get_one_by(profile_id=profile.id)
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Preferences not found"
@@ -95,7 +84,7 @@ async def get_user_playlists(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Get user's Spotify playlists.
+    List user's Spotify playlists. 
     """
     # Get user profile and preferences
     profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
@@ -153,96 +142,6 @@ async def get_user_playlists(
     return {"playlists": playlists}
 
 
-@router.get("/workout/{workout_id}")
-def get_playlist_for_workout(
-    workout_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """
-    Get a playlist for a specific workout.
-    """
-    # Get the workout
-    workout = (
-        db.query(Workout)
-        .filter(Workout.id == workout_id, Workout.user_id == current_user.id)
-        .first()
-    )
-
-    if not workout:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Workout not found"
-        )
-
-    # Get user profile and preferences
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
-    if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
-        )
-
-    preferences = (
-        db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-    )
-    if not preferences:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Preferences not found"
-        )
-
-    # Check if Spotify is connected
-    if not bool(preferences.spotify_connected):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Spotify not connected"
-        )
-
-    # Check if workout already has a playlist
-    if getattr(workout, "playlist_id", None) is not None and getattr(workout, "playlist_name", None) is not None:
-        return {
-            "playlist_id": workout.playlist_id,
-            "playlist_name": workout.playlist_name,
-            "external_url": f"https://open.spotify.com/playlist/{workout.playlist_id}",
-            "message": "Using existing playlist",
-        }
-
-    # Get Spotify access token from preferences
-    spotify_data = preferences.spotify_data or {}
-    if "access_token" not in spotify_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Spotify access token not found",
-        )
-
-
-    # Check if token needs to be refreshed
-    if "refresh_token" in spotify_data:
-        # In a real implementation, we would check if the token is expired
-        # and refresh it if needed
-        pass
-
-    # Select a playlist for the workout
-    playlist_selector = PlaylistSelectorService(db,profile,preferences)
-    playlist = playlist_selector.select_playlist_for_workout(
-        fitness_goal=profile.fitness_goal.value,
-        music_genres=cast(List[str], preferences.music_genres),
-        music_tempo=cast(str,preferences.music_tempo),
-    )
-
-    # Update the workout with the playlist info
-    workout.playlist_id = playlist["id"]
-    workout.playlist_name = playlist["name"]
-    workout.playlist_url = playlist["external_url"]
-    db.add(workout)
-    db.commit()
-
-    return {
-        "playlist_id": playlist["id"],
-        "playlist_name": playlist["name"],
-        "external_url": playlist["external_url"],
-        "image_url": playlist["image_url"],
-        "message": "Selected new playlist for workout",
-    }
-
-
 @router.get("/workout/{workout_id}/refresh")
 async def refresh_playlist_for_workout(
     workout_id: int,
@@ -250,30 +149,27 @@ async def refresh_playlist_for_workout(
     db: Session = Depends(get_db),
 )-> Dict[str, Any]:
     """
-    Get a new playlist for a workout.
+    Get a new playlist for a workout using Gemini Service and fallback to Playlist Selector Service.
     """
     # Get the workout
-    workout = (
-        db.query(Workout)
-        .filter(Workout.id == workout_id, Workout.user_id == current_user.id)
-        .first()
-    )
+    workout_repo = WorkoutRepository(db)
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
 
+    workout = workout_repo.get_one_by(user_id=current_user.id, id=workout_id)
     if not workout:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workout not found"
         )
 
     # Get user profile and preferences
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    profile = profile_repo.get_one_by(user_id=current_user.id)
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
         )
 
-    preferences = (
-        db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
-    )
+    preferences = preferences_repo.get_one_by(profile_id=profile.id)
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Preferences not found"
@@ -317,10 +213,9 @@ async def refresh_playlist_for_workout(
         
         # Fallback: use local playlist selector (requires the access token)
         playlist_selector = PlaylistSelectorService(db,profile,preferences)
-        playlist = playlist_selector.select_playlist_for_workout(
+        playlist = playlist_selector.shuffle_top_and_recent_tracks(
             fitness_goal=profile.fitness_goal.value,
-            music_genres=cast(List[str], preferences.music_genres),
-            music_tempo=cast(str,preferences.music_tempo),
+            duration_minutes=cast(int, profile.workout_duration_minutes),
         )
 
         workout.playlist_id = playlist["id"]

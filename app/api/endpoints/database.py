@@ -1,12 +1,12 @@
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
-from app.models.user import User
-from app.services.exercise import ExerciseService
 from app.db.session import get_db
-from sqlalchemy.orm import Session
-from app.models.workout import Exercise
+from app.models.user import User
+from app.repositories.exercise import ExerciseRepository
+from app.services.exercise import ExerciseService
 
 router = APIRouter()
 
@@ -15,22 +15,18 @@ def synchronize_database(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """_summary_
-    Synchronize the database with ExerciseDB API
-
-    Args:
-        current_user (User, optional): _description_. Defaults to Depends(get_current_user).
-
-    Returns:
-        _type_: _description_
     """
-    
+    Synchronize the database with ExerciseDB API
+    """
     exercise_service = ExerciseService(db)
-    # Delete all existing exercises
-    db.query(Exercise).delete()    
-    db.commit()
-    # Fetch all exercises from ExerciseDB API
+    exercise_repo = ExerciseRepository(db)
     
+    # Delete all existing exercises
+    # Note: This deletes directly via query for efficiency with bulk operations
+    db.query(exercise_repo.model).delete()
+    db.commit()
+    
+    # Fetch all exercises from ExerciseDB API
     exercises = [{
         "name": ex["name"],
         "body_part": ex["bodyPart"],
@@ -41,9 +37,7 @@ def synchronize_database(
         "instructions": ex["instructions"]
     } for ex in exercise_service.get_exercises_from_external_source(params={"limit": 1324})]
     
-    # Update Exercise table with fetched data
-    db.bulk_insert_mappings(Exercise.__mapper__, exercises)  
-        
-    db.commit()
+    # Bulk insert exercises
+    exercise_repo.bulk_insert(exercises)
     
     return {"message": "Database synchronized successfully"}
