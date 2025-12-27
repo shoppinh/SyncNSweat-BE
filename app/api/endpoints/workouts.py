@@ -532,7 +532,6 @@ def generate_workout_schedule(
         fitness_goal=profile.fitness_goal.value,
         fitness_level=profile.fitness_level.value,
         available_equipment=cast(List[str], preferences.available_equipment) if schedule_request else [],
-        target_muscle_groups=cast(List[str], preferences.target_muscle_groups) if schedule_request else [],
         workout_duration_minutes=cast(int, profile.workout_duration_minutes) if schedule_request else 0
     )
 

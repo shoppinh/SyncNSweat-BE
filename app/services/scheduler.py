@@ -18,7 +18,6 @@ class SchedulerService:
         fitness_goal: str,
         fitness_level: str,
         available_equipment: List[str],
-        target_muscle_groups: List[str],
         workout_duration_minutes: int
     ) -> List[Dict[str, Any]]:
         """
@@ -38,7 +37,7 @@ class SchedulerService:
         """
         # Map days to datetime objects for the current week
         today = datetime.now().date()
-        day_of_week = today.weekday()  # 0 = Monday, 6 = Sunday
+        day_of_week = today.weekday() 
         
         # Get the date of the most recent Monday
         monday = today - timedelta(days=day_of_week)

@@ -1,13 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Optional
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.profile import Profile
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.core.security import get_password_hash, get_current_user
 from app.api.endpoints.auth import register
+from app.utils.constant import ERROR_MESSAGES
 router = APIRouter()
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -38,7 +37,7 @@ def update_user_me(
 
     if user_in.password:
         hashed_password = get_password_hash(user_in.password)
-        updated_user.hashed_password = hashed_password
+        setattr(updated_user, "hashed_password", hashed_password)
     
     if user_in.email:
         # Check if email is already taken
@@ -47,9 +46,9 @@ def update_user_me(
             if db_user:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already registered"
+                    detail=ERROR_MESSAGES["EMAIL_ALREADY_REGISTERED"]
                 )
-        updated_user.email = user_in.email
+        setattr(updated_user, "email", user_in.email)
     
     db.add(updated_user)
     db.commit()

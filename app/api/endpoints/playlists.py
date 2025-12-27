@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 from app.core.config import settings
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -196,7 +196,7 @@ def get_playlist_for_workout(
         )
 
     # Check if workout already has a playlist
-    if workout.playlist_id is not None and workout.playlist_name is not None:
+    if getattr(workout, "playlist_id", None) is not None and getattr(workout, "playlist_name", None) is not None:
         return {
             "playlist_id": workout.playlist_id,
             "playlist_name": workout.playlist_name,
@@ -212,7 +212,6 @@ def get_playlist_for_workout(
             detail="Spotify access token not found",
         )
 
-    access_token = spotify_data["access_token"] or ""
 
     # Check if token needs to be refreshed
     if "refresh_token" in spotify_data:
@@ -221,13 +220,11 @@ def get_playlist_for_workout(
         pass
 
     # Select a playlist for the workout
-    playlist_selector = PlaylistSelectorService()
+    playlist_selector = PlaylistSelectorService(db,profile,preferences)
     playlist = playlist_selector.select_playlist_for_workout(
-        access_token=access_token,
-        workout_focus=workout.focus,
-        music_genres=preferences.music_genres,
-        music_tempo=preferences.music_tempo,
-        recently_used_playlists=[],  # In a real implementation, we would track recently used playlists
+        fitness_goal=profile.fitness_goal.value,
+        music_genres=cast(List[str], preferences.music_genres),
+        music_tempo=cast(str,preferences.music_tempo),
     )
 
     # Update the workout with the playlist info
@@ -251,7 +248,7 @@ async def refresh_playlist_for_workout(
     workout_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-):
+)-> Dict[str, Any]:
     """
     Get a new playlist for a workout.
     """
@@ -299,9 +296,9 @@ async def refresh_playlist_for_workout(
         raise HTTPException(status_code=500, detail=f"Error generating playlist: {e}")
 
     # Check for a created playlist in the result
-    playlist_id = result.get("playlist_id") or (result.get("playlist", {}) or {}).get("playlist_id")
-    playlist_name = result.get("playlist_name") or (result.get("playlist", {}) or {}).get("playlist_name")
-    playlist_url = result.get("playlist_url") or (result.get("playlist", {}) or {}).get("playlist_url")
+    playlist_id = result.get("playlist_id", None)
+    playlist_name = result.get("playlist_name", None) 
+    playlist_url = result.get("playlist_url", None)
 
     if playlist_id and playlist_name and playlist_url:
         workout.playlist_id = playlist_id
@@ -316,34 +313,26 @@ async def refresh_playlist_for_workout(
             "message": "Selected new playlist for workout",
         }
 
+    else:
         
-    return {
-        "playlist_id": None,
-        "playlist_name": None,
-        "external_url": None,
-        "message": "Failed to generate playlist via GeminiService",
-    }
+        # Fallback: use local playlist selector (requires the access token)
+        playlist_selector = PlaylistSelectorService(db,profile,preferences)
+        playlist = playlist_selector.select_playlist_for_workout(
+            fitness_goal=profile.fitness_goal.value,
+            music_genres=cast(List[str], preferences.music_genres),
+            music_tempo=cast(str,preferences.music_tempo),
+        )
 
-    # Fallback: use local playlist selector (requires the access token)
-    # playlist_selector = PlaylistSelectorService()
-    # recently_used_playlists = [workout.playlist_id] if workout.playlist_id else []
-    # playlist = playlist_selector.select_playlist_for_workout(
-    #     access_token=access_token,
-    #     workout_focus=workout.focus,
-    #     music_genres=preferences.music_genres,
-    #     music_tempo=preferences.music_tempo,
-    #     recently_used_playlists=recently_used_playlists,
-    # )
+        workout.playlist_id = playlist["id"]
+        workout.playlist_name = playlist["name"]
+        db.add(workout)
+        db.commit()
 
-    # workout.playlist_id = playlist["id"]
-    # workout.playlist_name = playlist["name"]
-    # db.add(workout)
-    # db.commit()
+        return {
+            "playlist_id": playlist["id"],
+            "playlist_name": playlist["name"],
+            "external_url": playlist["external_url"],
+            "image_url": playlist["image_url"],
+            "message": "Selected new playlist for workout (fallback selector)",
+        }
 
-    # return {
-    #     "playlist_id": playlist["id"],
-    #     "playlist_name": playlist["name"],
-    #     "external_url": playlist["external_url"],
-    #     "image_url": playlist["image_url"],
-    #     "message": "Selected new playlist for workout (fallback selector)",
-    # }

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, logger, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -64,7 +65,7 @@ def login(
     OAuth2 compatible token login, get an access token for future requests.
     """
     user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user or not verify_password(form_data.password, getattr(user, "hashed_password", "")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -107,7 +108,7 @@ async def spotify_callback(
 
     error: str = Query(None, description="Spotify error, if any"),
     db: Session = Depends(get_db),
-):
+) -> dict[str, Any]:
     """
     Handle Spotify OAuth callback for login or connection.
     """
@@ -164,15 +165,16 @@ async def spotify_callback(
                 db.add(preferences)
                 db.commit()
                 db.refresh(preferences)
-
-            preferences.spotify_connected = True
-            preferences.spotify_data = {
+                
+            setattr( preferences, "spotify_connected", True)
+            setattr(preferences, "spotify_data",
+            {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "expires_in": token_data.get("expires_in"),
                 "expires_at": expires_at,
                 "token_type": token_data.get("token_type"),
-            }
+            })
 
             db.commit()
             db.refresh(preferences)
@@ -194,14 +196,15 @@ async def spotify_callback(
                 db.add(preferences)
                 db.commit()
                 db.refresh(preferences)
-            preferences.spotify_connected = True
-            preferences.spotify_data = {
+            setattr( preferences, "spotify_connected", True)
+            
+            setattr(preferences, "spotify_data", {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "expires_in": token_data.get("expires_in"),
                 "expires_at": expires_at,
                 "token_type": token_data.get("token_type"),
-            }
+            })
             db.commit()
             db.refresh(preferences)
             access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -251,8 +254,8 @@ async def spotify_callback(
         try:
             top_artists = await spotify_service.get_current_user_top_artists()
             top_tracks = await spotify_service.get_current_user_top_tracks()
-            preferences.top_artists = [artist["name"] for artist in top_artists.get("items", [])]
-            preferences.top_tracks = [track["name"] for track in top_tracks.get("items", [])]
+            setattr(preferences, "top_artists", [artist["name"] for artist in top_artists.get("items", [])])
+            setattr(preferences, "top_tracks", [track["name"] for track in top_tracks.get("items", [])])
         except Exception as e:
             # Log error but don't fail login
             print(f"Error fetching user data: {e}")

@@ -57,7 +57,6 @@ class PlaylistSelectorService:
         if status in (401, 403):
             raise Exception(f"Spotify authentication failed during {context}: {err}")
 
-    # TODO: Use this method as fallback in playlist selection if Gemini API fails
     def select_playlist_for_workout(
         self,
         fitness_goal: str,

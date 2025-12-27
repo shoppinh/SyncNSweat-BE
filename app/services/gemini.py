@@ -335,5 +335,3 @@ class GeminiService:
             return normalized_exercise
         except (json.JSONDecodeError, AttributeError):
             return None
-
-        

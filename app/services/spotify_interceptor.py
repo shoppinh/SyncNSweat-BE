@@ -37,8 +37,8 @@ class SpotifyInterceptor:
         Initialize the interceptor.
         
         Args:
-            refresh_token_callback: A callable that takes a refresh_token and returns
-                                   a dict with new access_token and optionally expires_in
+            refresh_token_callback: A callable that takes a refresh_token and returns 
+            a dict with new access_token and optionally expires_in
         """
         self.refresh_token_callback = refresh_token_callback
         # Optional callback used to persist token data to the application's

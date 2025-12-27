@@ -42,7 +42,7 @@ def synchronize_database(
     } for ex in exercise_service.get_exercises_from_external_source(params={"limit": 1324})]
     
     # Update Exercise table with fetched data
-    db.bulk_insert_mappings(Exercise, exercises)  
+    db.bulk_insert_mappings(Exercise.__mapper__, exercises)  
         
     db.commit()
     

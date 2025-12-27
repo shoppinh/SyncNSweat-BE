@@ -4,7 +4,7 @@ from datetime import datetime
 from app.schemas.exercise import WorkoutExerciseCreate, WorkoutExerciseResponse
 
 class WorkoutBase(BaseModel):
-    date: Optional[datetime] = None
+    date: datetime
     duration_minutes: Optional[int] = None
     playlist_id: Optional[str] = None
     playlist_name: Optional[str] = None
@@ -12,7 +12,6 @@ class WorkoutBase(BaseModel):
     completed: Optional[bool] = False
 
 class WorkoutCreate(WorkoutBase):
-    date: datetime
     exercises: Optional[List[WorkoutExerciseCreate]] = None
     
 class WorkoutSuggest(BaseModel):

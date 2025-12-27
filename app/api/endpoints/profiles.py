@@ -11,6 +11,7 @@ from app.core.security import get_current_user
 # Services
 from app.services.profile import ProfileService
 from app.services.preferences import PreferencesService
+from app.utils.constant import ERROR_MESSAGES
 
 router = APIRouter()
 
@@ -26,7 +27,7 @@ def read_profile_me(
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+            detail=ERROR_MESSAGES["PROFILE_NOT_FOUND"]
         )
         
     return profile
@@ -45,7 +46,7 @@ def create_profile(
     if db_profile:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User already has a profile"
+            detail=ERROR_MESSAGES["PROFILE_ALREADY_EXIST"]
         )
     
     # Create new profile via service
@@ -72,7 +73,7 @@ def update_profile_me(
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+            detail=ERROR_MESSAGES["PROFILE_NOT_FOUND"]
         )
     # Update via service
     update_data = profile_in.model_dump(exclude_unset=True)
@@ -91,13 +92,13 @@ def read_preferences_me(
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+            detail=ERROR_MESSAGES["PROFILE_NOT_FOUND"]
         )
     preferences = PreferencesService(db).get_preferences_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Preferences not found"
+            detail=ERROR_MESSAGES["PREFERENCES_NOT_FOUND"]
         )
     
     return preferences
@@ -115,7 +116,7 @@ def create_preferences_me(
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+            detail=ERROR_MESSAGES["PROFILE_NOT_FOUND"]
         )
     
     # Check if preferences already exist
@@ -123,7 +124,7 @@ def create_preferences_me(
     if db_preferences:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Preferences already exist"
+            detail=ERROR_MESSAGES["PREFERENCES_ALREADY_EXIST"]
         )
     
     # Create new preferences
@@ -143,14 +144,14 @@ def update_preferences_me(
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found"
+            detail=ERROR_MESSAGES["PROFILE_NOT_FOUND"]
         )
     
     preferences = PreferencesService(db).get_preferences_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Preferences not found"
+            detail=ERROR_MESSAGES["PREFERENCES_NOT_FOUND"]
         )
     
     update_data = preferences_in.model_dump(exclude_unset=True)
