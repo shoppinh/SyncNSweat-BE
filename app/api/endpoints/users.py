@@ -1,12 +1,16 @@
+from typing import Any, Dict
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.endpoints.auth import register
+from app.core.security import get_current_user, get_password_hash
 from app.db.session import get_db
 from app.models.user import User
+from app.repositories.user import UserRepository
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
-from app.core.security import get_password_hash, get_current_user
-from app.api.endpoints.auth import register
 from app.utils.constant import ERROR_MESSAGES
+
 router = APIRouter()
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -32,27 +36,23 @@ def update_user_me(
     """
     Update current user.
     """
-
-    updated_user = current_user
+    user_repo = UserRepository(db)
+    update_data: Dict[str, Any] = {}
 
     if user_in.password:
-        hashed_password = get_password_hash(user_in.password)
-        setattr(updated_user, "hashed_password", hashed_password)
+        update_data["hashed_password"] = get_password_hash(user_in.password)
     
     if user_in.email:
         # Check if email is already taken
-        if user_in.email != updated_user.email:
-            db_user = db.query(User).filter(User.email == user_in.email).first()
-            if db_user:
+        if user_in.email != current_user.email:
+            if user_repo.email_exists(user_in.email):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ERROR_MESSAGES["EMAIL_ALREADY_REGISTERED"]
                 )
-        setattr(updated_user, "email", user_in.email)
+        update_data["email"] = user_in.email
     
-    db.add(updated_user)
-    db.commit()
-    db.refresh(updated_user)
+    updated_user = user_repo.update(current_user, update_data)
     return updated_user
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -62,7 +62,8 @@ def read_user(
     """
     Get user by ID.
     """
-    user = db.query(User).filter(User.id == user_id).first()
+    user_repo = UserRepository(db)
+    user = user_repo.get_by_id(user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

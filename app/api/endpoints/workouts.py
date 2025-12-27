@@ -1,21 +1,23 @@
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, cast, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.models.preferences import Preferences
-from app.models.profile import Profile
 from app.models.user import User
-from app.models.workout import Exercise, Workout, WorkoutExercise
+from app.models.workout import Workout, WorkoutExercise
+from app.repositories.exercise import ExerciseRepository
+from app.repositories.preferences import PreferencesRepository
+from app.repositories.profile import ProfileRepository
+from app.repositories.workout import WorkoutRepository
+from app.repositories.workout_exercise import WorkoutExerciseRepository
 from app.schemas.exercise import (WorkoutExerciseCreate,
                                   WorkoutExerciseResponse,
                                   WorkoutExerciseUpdate)
 from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
-                                 WorkoutCreate, WorkoutResponse,
-                                  WorkoutUpdate)
+                                 WorkoutCreate, WorkoutResponse, WorkoutUpdate)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.playlist_selector import PlaylistSelectorService
@@ -42,14 +44,13 @@ def read_workouts(
     """
     Get all workouts for the current user.
     """
-    query = db.query(Workout).options(selectinload(Workout.workout_exercises).selectinload(WorkoutExercise.exercise)).filter(Workout.user_id == current_user.id)
-
-    if start_date:
-        query = query.filter(Workout.date >= start_date)
-    if end_date:
-        query = query.filter(Workout.date <= end_date)
-
-    workouts = query.order_by(Workout.date.desc()).offset(skip).limit(limit).all()
+    workout_repo = WorkoutRepository(db)
+    
+    if start_date and end_date:
+        workouts = workout_repo.get_by_date_range(getattr(current_user, "id"), start_date.date(), end_date.date())
+    else:
+        workouts = workout_repo.get_all_with_exercises(getattr(current_user, "id"), skip, limit)
+    
     return workouts
 
 @router.post("/suggest-workout-schedule", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
@@ -65,12 +66,18 @@ async def suggest_workout_schedule(
     by the AI doesn't exist in the `exercises` table, a minimal `Exercise` row
     will be created.
     """
+    # Initialize repositories
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    workout_repo = WorkoutRepository(db)
+    exercise_repo = ExerciseRepository(db)
+    
     # Load profile and preferences
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND)
 
-    preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+    preferences = preferences_repo.get_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND)
 
@@ -122,17 +129,14 @@ async def suggest_workout_schedule(
         )
         workout_exercises = selected_exercises
     
-    db_workout = Workout(
-        user_id=current_user.id,
-        duration_minutes=profile.workout_duration_minutes,
-        date=datetime.now(),
-        playlist_id=playlist_id,
-        playlist_name=playlist_name,
-        playlist_url=playlist_url
-    )
-
-    db.add(db_workout)
-    db.flush()  # get id for FK relationships
+    db_workout = workout_repo.create({
+        "user_id": current_user.id,
+        "duration_minutes": profile.workout_duration_minutes,
+        "date": datetime.now(),
+        "playlist_id": playlist_id,
+        "playlist_name": playlist_name,
+        "playlist_url": playlist_url
+    })
 
     created_workout_exercises: List[WorkoutExercise] = []
 
@@ -152,37 +156,31 @@ async def suggest_workout_schedule(
         # First try an exact case-insensitive match, then fall back to a contains match
         # (useful when AI returns slightly different spacing/casing).
         name_clean = str(name).strip()
-        exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(name_clean)).first()
+        exercise_obj = exercise_repo.get_by_name_exact(name_clean)
         if not exercise_obj:
-            pattern = f"%{name_clean}%"
-            exercise_obj = db.query(Exercise).filter(Exercise.name.ilike(pattern)).first()
+            results = exercise_repo.search_by_name(name_clean, limit=1)
+            exercise_obj = results[0] if results else None
         if not exercise_obj:
-            exercise_obj = Exercise(
-                name=name,
-                target=workout_ex.get("target") or "General",
-                body_part=workout_ex.get("body_part") or workout_ex.get("bodyPart") or "General",
-                secondary_muscles=workout_ex.get("secondary_muscles") if isinstance(workout_ex.get("secondary_muscles"), list) else None,
-                equipment=workout_ex.get("machine") or workout_ex.get("equipment") or None,
-                gif_url=workout_ex.get("gif_url") or workout_ex.get("gifUrl") or None,
-                instructions=workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
-            )
-            db.add(exercise_obj)
-            db.flush()
+            exercise_obj = exercise_repo.create({
+                "name": name,
+                "target": workout_ex.get("target") or "General",
+                "body_part": workout_ex.get("body_part") or workout_ex.get("bodyPart") or "General",
+                "secondary_muscles": workout_ex.get("secondary_muscles") if isinstance(workout_ex.get("secondary_muscles"), list) else None,
+                "equipment": workout_ex.get("machine") or workout_ex.get("equipment") or None,
+                "gif_url": workout_ex.get("gif_url") or workout_ex.get("gifUrl") or None,
+                "instructions": workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
+            })
 
-        workout_ex_to_create = WorkoutExercise(
-            workout_id=db_workout.id,
-            exercise_id=exercise_obj.id,
+        workout_ex_repo = WorkoutExerciseRepository(db)
+        workout_ex_to_create = workout_ex_repo.create_with_composite_key(
+            workout_id=getattr(db_workout, "id"),
+            exercise_id=getattr(exercise_obj, "id"),
             sets=int(sets) if sets is not None else None,
             reps=str(reps) if reps is not None else None,
             order=idx + 1,
             rest_seconds=rest_seconds
         )
-        db.add(workout_ex_to_create)
         created_workout_exercises.append(workout_ex_to_create)
-
-    # Commit everything and return the persisted workout
-    db.commit()
-    db.refresh(db_workout)
 
     return db_workout
 
@@ -195,26 +193,25 @@ def create_workout(
     """
     Create a new workout for the current user.
     """
-    db_workout = Workout(
-        user_id=current_user.id,
-        **workout_in.model_dump(exclude={"exercises"})
-    )
-    db.add(db_workout)
-    db.commit()
-    db.refresh(db_workout)
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
+    workout_data = workout_in.model_dump(exclude={"exercises"})
+    workout_data["user_id"] = current_user.id
+    db_workout = workout_repo.create(workout_data)
 
     # Add exercises if provided
     if workout_in.exercises:
         for i, exercise_in in enumerate(workout_in.exercises):
-            db_exercise = WorkoutExercise(
-                workout_id=db_workout.id,
+            exercise_data = exercise_in.model_dump()
+            workout_exercise_repo.create_with_composite_key(
+                workout_id=getattr(db_workout, "id"),
+                exercise_id=exercise_data["exercise_id"],
                 order=i + 1,
-                **exercise_in.model_dump()
+                sets=exercise_data.get("sets"),
+                reps=exercise_data.get("reps"),
+                rest_seconds=exercise_data.get("rest_seconds")
             )
-            db.add(db_exercise)
-
-        db.commit()
-        db.refresh(db_workout)
 
     return db_workout
 
@@ -226,14 +223,11 @@ def get_today_workout(
     """
     Get today's workout.
     """
+    workout_repo = WorkoutRepository(db)
     today = datetime.now().date()
 
     # Get workout for today
-    workout = db.query(Workout).filter(
-        Workout.user_id == current_user.id,
-        Workout.date >= datetime.combine(today, datetime.min.time()),
-        Workout.date <= datetime.combine(today, datetime.max.time())
-    ).order_by(Workout.created_at.desc()).first()
+    workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
 
     if not workout:
         raise HTTPException(
@@ -253,10 +247,8 @@ def read_workout(
     """
     Get a specific workout by ID.
     """
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout_repo = WorkoutRepository(db)
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -276,10 +268,8 @@ def update_workout(
     """
     Update a specific workout.
     """
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout_repo = WorkoutRepository(db)
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -288,12 +278,8 @@ def update_workout(
         )
 
     # Update workout fields
-    for field, value in workout_in.model_dump(exclude_unset=True, exclude={"exercises"}).items():
-        setattr(workout, field, value)
-
-    db.add(workout)
-    db.commit()
-    db.refresh(workout)
+    update_data = workout_in.model_dump(exclude_unset=True, exclude={"exercises"})
+    workout = workout_repo.update(workout, update_data)
     return workout
 
 @router.delete("/{workout_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -305,10 +291,8 @@ def delete_workout(
     """
     Delete a specific workout.
     """
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout_repo = WorkoutRepository(db)
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -316,8 +300,7 @@ def delete_workout(
             detail=WORKOUT_NOT_FOUND
         )
 
-    db.delete(workout)
-    db.commit()
+    workout_repo.delete(workout)
     return None
 
 @router.get("/{workout_id}/exercises", response_model=List[WorkoutExerciseResponse])
@@ -329,11 +312,11 @@ def read_workout_exercises(
     """
     Get all exercises for a specific workout.
     """
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
     # Check if workout exists and belongs to user
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -341,9 +324,7 @@ def read_workout_exercises(
             detail=WORKOUT_NOT_FOUND
         )
 
-    exercises = db.query(WorkoutExercise).filter(
-        WorkoutExercise.workout_id == workout_id
-    ).order_by(WorkoutExercise.order).all()
+    exercises = workout_exercise_repo.get_by_workout_id(workout_id)
 
     return exercises
 
@@ -357,11 +338,11 @@ def add_workout_exercise(
     """
     Add an exercise to a specific workout.
     """
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
     # Check if workout exists and belongs to user
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -370,23 +351,22 @@ def add_workout_exercise(
         )
 
     # Get the highest order value
-    last_exercise = db.query(WorkoutExercise).filter(
-        WorkoutExercise.workout_id == workout_id
-    ).order_by(WorkoutExercise.order.desc()).first()
+    exercises = workout_exercise_repo.get_by_workout_id(workout_id)
 
     next_order = 1
-    if last_exercise:
-        next_order = last_exercise.order + 1
+    if exercises:
+        next_order = max(ex.order for ex in exercises) + 1
 
     # Create new exercise
-    db_exercise = WorkoutExercise(
+    exercise_data = exercise_in.model_dump()
+    db_exercise = workout_exercise_repo.create_with_composite_key(
         workout_id=workout_id,
+        exercise_id=exercise_data["exercise_id"],
         order=next_order,
-        **exercise_in.model_dump()
+        sets=exercise_data.get("sets"),
+        reps=exercise_data.get("reps"),
+        rest_seconds=exercise_data.get("rest_seconds")
     )
-    db.add(db_exercise)
-    db.commit()
-    db.refresh(db_exercise)
 
     return db_exercise
 
@@ -401,11 +381,11 @@ def update_workout_exercise(
     """
     Update a specific exercise in a workout.
     """
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
     # Check if workout exists and belongs to user
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -414,10 +394,7 @@ def update_workout_exercise(
         )
 
     # Get the exercise
-    exercise = db.query(WorkoutExercise).filter(
-        WorkoutExercise.id == exercise_id,
-        WorkoutExercise.workout_id == workout_id
-    ).first()
+    exercise = workout_exercise_repo.get_by_composite_key(workout_id, exercise_id)
 
     if not exercise:
         raise HTTPException(
@@ -426,12 +403,8 @@ def update_workout_exercise(
         )
 
     # Update exercise fields
-    for field, value in exercise_in.model_dump(exclude_unset=True).items():
-        setattr(exercise, field, value)
-
-    db.add(exercise)
-    db.commit()
-    db.refresh(exercise)
+    update_data = exercise_in.model_dump(exclude_unset=True)
+    exercise = workout_exercise_repo.update(exercise, update_data)
     return exercise
 
 @router.delete("/{workout_id}/exercises/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -444,11 +417,11 @@ def delete_workout_exercise(
     """
     Delete a specific exercise from a workout.
     """
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
     # Check if workout exists and belongs to user
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -457,10 +430,7 @@ def delete_workout_exercise(
         )
 
     # Get the exercise
-    exercise = db.query(WorkoutExercise).filter(
-        WorkoutExercise.id == exercise_id,
-        WorkoutExercise.workout_id == workout_id
-    ).first()
+    exercise = workout_exercise_repo.get_by_composite_key(workout_id, exercise_id)
 
     if not exercise:
         raise HTTPException(
@@ -468,8 +438,7 @@ def delete_workout_exercise(
             detail=EXERCISE_NOT_FOUND
         )
 
-    db.delete(exercise)
-    db.commit()
+    workout_exercise_repo.delete(exercise)
     return None
 
 @router.post("/schedule", response_model=ScheduleResponse)
@@ -481,8 +450,13 @@ def generate_workout_schedule(
     """
     Generate a weekly workout schedule based on user preferences.
     """
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    
     # Get user profile
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -490,7 +464,7 @@ def generate_workout_schedule(
         )
 
     # Get user preferences
-    preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+    preferences = preferences_repo.get_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -504,12 +478,7 @@ def generate_workout_schedule(
     today = datetime.now().date()
     start_of_week = today - timedelta(days=today.weekday())
     end_of_week = start_of_week + timedelta(days=6)
-
-    existing_workouts = db.query(Workout).filter(
-        Workout.user_id == current_user.id,
-        Workout.date >= datetime.combine(start_of_week, datetime.min.time()),
-        Workout.date <= datetime.combine(end_of_week, datetime.max.time())
-    ).all()
+    existing_workouts = workout_repo.get_by_date_range(getattr(current_user, "id"), start_of_week, end_of_week)
 
     if existing_workouts and not regenerate:
         # Return existing workouts
@@ -521,8 +490,7 @@ def generate_workout_schedule(
     # If regenerate flag is set, delete existing workouts
     if existing_workouts and regenerate:
         for workout in existing_workouts:
-            db.delete(workout)
-        db.commit()
+            workout_repo.delete(workout)
 
     # Generate new workout schedule
     scheduler_service = SchedulerService(db)
@@ -541,22 +509,19 @@ def generate_workout_schedule(
         exercises = workout_data.pop("exercises", [])
 
         # Create workout
-        workout = Workout(**workout_data)
-        db.add(workout)
-        db.commit()
-        db.refresh(workout)
+        workout = workout_repo.create(workout_data)
 
         # Add exercises to workout
         for i, exercise_data in enumerate(exercises):
-            exercise = WorkoutExercise(
-                workout_id=workout.id,
+            workout_exercise_repo.create_with_composite_key(
+                workout_id=getattr(workout, "id"),
+                exercise_id=exercise_data["exercise_id"],
                 order=i + 1,
-                **exercise_data
+                sets=exercise_data.get("sets"),
+                reps=exercise_data.get("reps"),
+                rest_seconds=exercise_data.get("rest_seconds")
             )
-            db.add(exercise)
 
-        db.commit()
-        db.refresh(workout)
         created_workouts.append(workout)
 
     return ScheduleResponse(
@@ -574,11 +539,14 @@ async def swap_workout_exercise(
     """
     Swap an exercise in a workout with a similar one.
     """
+    workout_repo = WorkoutRepository(db)
+    workout_exercise_repo = WorkoutExerciseRepository(db)
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    exercise_repo = ExerciseRepository(db)
+    
     # Check if workout exists and belongs to user
-    workout = db.query(Workout).filter(
-        Workout.id == workout_id,
-        Workout.user_id == current_user.id
-    ).first()
+    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
 
     if not workout:
         raise HTTPException(
@@ -587,10 +555,7 @@ async def swap_workout_exercise(
         )
 
     # Get the exercise
-    workout_exercise = db.query(WorkoutExercise).filter(
-        WorkoutExercise.exercise_id == exercise_id,
-        WorkoutExercise.workout_id == workout_id
-    ).first()
+    workout_exercise = workout_exercise_repo.get_by_composite_key(workout_id, exercise_id)
 
     if not workout_exercise:
         raise HTTPException(
@@ -599,14 +564,14 @@ async def swap_workout_exercise(
         )
 
     # Get user profile and preferences
-    profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
+    profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=PROFILE_NOT_FOUND
         )
 
-    preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+    preferences = preferences_repo.get_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -614,9 +579,7 @@ async def swap_workout_exercise(
         )
 
     # Get all exercises in the workout to avoid duplicates
-    workout_exercises = db.query(WorkoutExercise).filter(
-        WorkoutExercise.workout_id == workout_id
-    ).all()
+    workout_exercises = workout_exercise_repo.get_by_workout_id(workout_id)
 
     recently_used_exercises_name = [ex.exercise.name for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
     recently_used_exercise_ids = [ex.exercise.id for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
@@ -637,40 +600,34 @@ async def swap_workout_exercise(
     if new_exercise_data:
         # Update the exercise with the new data from Gemini
         # Find the exercise in the database by name
-        new_exercise = db.query(Exercise).filter(Exercise.name == new_exercise_data["name"]).first()
+        new_exercise = exercise_repo.get_by_name_exact(new_exercise_data["name"])
         if not new_exercise:
-            new_exercise = Exercise(
-                name=new_exercise_data["name"],
-                target=new_exercise_data.get("target", "General"),
-                body_part=new_exercise_data.get("body_part", "General"),
-                equipment=new_exercise_data.get("equipment"),
-                instructions=new_exercise_data.get("instructions"),
-            )
-            db.add(new_exercise)
-            db.flush()
+            new_exercise = exercise_repo.create({
+                "name": new_exercise_data["name"],
+                "target": new_exercise_data.get("target", "General"),
+                "body_part": new_exercise_data.get("body_part", "General"),
+                "equipment": new_exercise_data.get("equipment"),
+                "instructions": new_exercise_data.get("instructions"),
+            })
             # Update workout exercise to point to the new exercise
-            workout_exercise.exercise_id = new_exercise.id
-            workout_exercise.exercise = new_exercise
-            workout_exercise.sets = new_exercise_data["sets"]
-            workout_exercise.reps = new_exercise_data["reps"]
-            workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
-            setattr(workout_exercise, "completed_sets", 0)
-            setattr(workout_exercise, "weights_used", [])
-            db.add(workout_exercise)
-            db.commit()
-            db.refresh(workout_exercise)
+            workout_exercise_repo.update(workout_exercise, {
+                "exercise_id": new_exercise.id,
+                "sets": new_exercise_data["sets"],
+                "reps": new_exercise_data["reps"],
+                "rest_seconds": new_exercise_data["rest_seconds"],
+                "completed_sets": 0,
+                "weights_used": []
+            })
             return workout_exercise
         # Update workout exercise to point to the existing exercise
-        workout_exercise.exercise_id = new_exercise.id
-        workout_exercise.exercise = new_exercise
-        workout_exercise.sets = new_exercise_data["sets"]
-        workout_exercise.reps = new_exercise_data["reps"]
-        workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
-        setattr(workout_exercise, "completed_sets", 0)
-        setattr(workout_exercise, "weights_used", [])
-        db.add(workout_exercise)
-        db.commit()
-        db.refresh(workout_exercise)
+        workout_exercise_repo.update(workout_exercise, {
+            "exercise_id": new_exercise.id,
+            "sets": new_exercise_data["sets"],
+            "reps": new_exercise_data["reps"],
+            "rest_seconds": new_exercise_data["rest_seconds"],
+            "completed_sets": 0,
+            "weights_used": []
+        })
 
         return workout_exercise
     else:
@@ -689,20 +646,18 @@ async def swap_workout_exercise(
         )
 
         # Update the exercise with the new data
-        workout_exercise.exercise_id = new_exercise_data["exercise_id"]
-        workout_exercise.name = new_exercise_data["name"]
-        workout_exercise.description = new_exercise_data["description"]
-        workout_exercise.muscle_group = new_exercise_data["muscle_group"]
-        workout_exercise.equipment = new_exercise_data["equipment"]
-        workout_exercise.sets = new_exercise_data["sets"]
-        workout_exercise.reps = new_exercise_data["reps"]
-        workout_exercise.rest_seconds = new_exercise_data["rest_seconds"]
-        setattr(workout_exercise, "completed_sets", 0)
-        setattr(workout_exercise, "weights_used", [])
-
-        db.add(workout_exercise)
-        db.commit()
-        db.refresh(workout_exercise)
+        workout_exercise_repo.update(workout_exercise, {
+            "exercise_id": new_exercise_data["exercise_id"],
+            "name": new_exercise_data["name"],
+            "description": new_exercise_data["description"],
+            "muscle_group": new_exercise_data["muscle_group"],
+            "equipment": new_exercise_data["equipment"],
+            "sets": new_exercise_data["sets"],
+            "reps": new_exercise_data["reps"],
+            "rest_seconds": new_exercise_data["rest_seconds"],
+            "completed_sets": 0,
+            "weights_used": []
+        })
         return workout_exercise
 
 

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.workout import Exercise
+from app.repositories.exercise import ExerciseRepository
 
 
 class ExerciseService:
@@ -12,8 +13,9 @@ class ExerciseService:
         self.api_key = settings.EXERCISE_API_KEY
         self.api_host = settings.EXERCISE_API_HOST
         self.api_url = "https://exercisedb.p.rapidapi.com"
-        self.db = db
+        self.exercise_repo = ExerciseRepository(db)
     
+    # Start of external source methods
     def get_exercises_from_external_source(self, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Get a list of exercises.
@@ -78,30 +80,30 @@ class ExerciseService:
     # End of external source methods
     
     # Start of internal methods
-    def get_exercises(self, params: Optional[Dict[str, Any]] = None) -> List[Exercise]:
+    def get_exercises(self) -> List[Exercise]:
         """
         Get a list of exercises.
         """
-        return self.db.query(Exercise).all()
+        return self.exercise_repo.get_all()
     
     def get_exercise_by_id(self, exercise_id: int) -> Optional[Exercise]:
         """
         Get an exercise by ID.
         """
-        return self.db.query(Exercise).filter(Exercise.id == exercise_id).first()
+        return self.exercise_repo.get_by_id(exercise_id)
     
     def get_exercises_by_target(self, target: str) -> List[Exercise]:
         """
         Get exercises by target muscle.
         """
-        return self.db.query(Exercise).filter(Exercise.target.ilike(f"%{target}%")).all()
+        return self.exercise_repo.search_by_name(target)
     
     def get_exercises_by_equipment(self, equipment: str) -> List[Exercise]:
         """
         Get exercises by equipment.
         """
-        return self.db.query(Exercise).filter(Exercise.equipment == equipment).all()
-    
+        return self.exercise_repo.get_by_equipment(equipment)
+    # End of internal methods
     #  DEPRECATED: Use workout selector service as fallback method for exercise generation if Gemini API fails
     def generate_workout(
         self,

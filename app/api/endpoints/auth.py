@@ -1,19 +1,17 @@
 from datetime import timedelta
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, logger, status, Query
+
+from fastapi import APIRouter, Depends, HTTPException, Query, logger, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
-from app.models.user import User
-from app.models.profile import Profile
-from app.models.preferences import Preferences
-from app.core.security import (
-    create_access_token,
-    verify_password,
-    get_password_hash,
-)
 from app.core.config import settings
+from app.core.security import (create_access_token, get_password_hash,
+                               verify_password)
+from app.db.session import get_db
+from app.repositories.preferences import PreferencesRepository
+from app.repositories.profile import ProfileRepository
+from app.repositories.user import UserRepository
 from app.schemas.token import Token
 from app.schemas.user import UserCreate, UserResponse
 from app.services.spotify import SpotifyService
@@ -28,31 +26,34 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     """
     Register a new user.
     """
+    # Initialize repositories
+    user_repo = UserRepository(db)
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    
     # Check if user with this email already exists
-    db_user = db.query(User).filter(User.email == user_in.email).first()
-    if db_user:
+    if user_repo.email_exists(user_in.email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
     # Create new user
     hashed_password = get_password_hash(user_in.password)
-    db_user = User(email=user_in.email, hashed_password=hashed_password, is_active=True)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    db_user = user_repo.create({
+        "email": user_in.email,
+        "hashed_password": hashed_password,
+        "is_active": True
+    })
 
     # Create profile for user if name is provided
     if user_in.name:
-        profile = Profile(user_id=db_user.id, name=user_in.name)
-        db.add(profile)
-        db.commit()
-        db.refresh(profile)
+        profile = profile_repo.create({
+            "user_id": db_user.id,
+            "name": user_in.name
+        })
 
         # Create empty preferences
-        preferences = Preferences(profile_id=profile.id)
-        db.add(preferences)
-        db.commit()
+        preferences_repo.create({"profile_id": profile.id})
 
     return db_user
 
@@ -64,7 +65,9 @@ def login(
     """
     OAuth2 compatible token login, get an access token for future requests.
     """
-    user = db.query(User).filter(User.email == form_data.username).first()
+    user_repo = UserRepository(db)
+    user = user_repo.get_by_email(form_data.username)
+    
     if not user or not verify_password(form_data.password, getattr(user, "hashed_password", "")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -124,6 +127,11 @@ async def spotify_callback(
             detail="Authorization code is required",
         )
 
+    # Initialize repositories
+    user_repo = UserRepository(db)
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+
     # Exchange code for access token
     spotify_service = SpotifyService()
     redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
@@ -150,63 +158,52 @@ async def spotify_callback(
         )
 
     # Check if user exists by Spotify ID
-    existing_user = db.query(User).filter(User.spotify_user_id == spotify_user_id).first()
+    existing_user = user_repo.get_by_spotify_user_id(spotify_user_id)
 
     if existing_user:
         # User exists, log them in
         user = existing_user
 
         # Update or create preferences with Spotify data
-        profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+        profile = profile_repo.get_by_user_id(getattr(user, "id", 0))
         if profile:
-            preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+            preferences = preferences_repo.get_by_profile_id(getattr(profile, "id", 0))
             if not preferences:
-                preferences = Preferences(profile_id=profile.id)
-                db.add(preferences)
-                db.commit()
-                db.refresh(preferences)
+                preferences = preferences_repo.create({"profile_id": profile.id})
                 
-            setattr( preferences, "spotify_connected", True)
-            setattr(preferences, "spotify_data",
-            {
+            preferences_repo.update_spotify_data(preferences, {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "expires_in": token_data.get("expires_in"),
                 "expires_at": expires_at,
                 "token_type": token_data.get("token_type"),
             })
-
-            db.commit()
-            db.refresh(preferences)
+            preferences_repo.update(preferences, {"spotify_connected": True})
     else:
         # Check if email is already registered
-        user = db.query(User).filter(User.email == email).first()
+        user = user_repo.get_by_email(email) if email else None
         if email and user is not None:
             # Update existing user to link Spotify account
             # get the preferences associated with this user
-            profile = db.query(Profile).filter(Profile.user_id == user.id).first()
+            profile = profile_repo.get_by_user_id(getattr(user, "id", 0))
             if not profile:
-                profile = Profile(user_id=user.id, name=user_profile.get("display_name", ""))
-                db.add(profile)
-                db.commit()
-                db.refresh(profile)
-            preferences = db.query(Preferences).filter(Preferences.profile_id == profile.id).first()
+                profile = profile_repo.create({
+                    "user_id": user.id,
+                    "name": user_profile.get("display_name", "")
+                })
+            preferences = preferences_repo.get_by_profile_id(getattr(profile, "id", 0))
             if not preferences:
-                preferences = Preferences(profile_id=profile.id, )
-                db.add(preferences)
-                db.commit()
-                db.refresh(preferences)
-            setattr( preferences, "spotify_connected", True)
+                preferences = preferences_repo.create({"profile_id": profile.id})
             
-            setattr(preferences, "spotify_data", {
+            preferences_repo.update_spotify_data(preferences, {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "expires_in": token_data.get("expires_in"),
                 "expires_at": expires_at,
                 "token_type": token_data.get("token_type"),
             })
-            db.commit()
-            db.refresh(preferences)
+            preferences_repo.update(preferences, {"spotify_connected": True})
+            
             access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
             jwt_token = create_access_token(
                 data={"sub": user.email}, expires_delta=access_token_expires
@@ -222,46 +219,44 @@ async def spotify_callback(
             }
 
         # Create new user
-        user = User(
-            email=email or f"spotify_{spotify_user_id}@spotify.local",
-            spotify_user_id=spotify_user_id,
-            is_active=True,
-            hashed_password=get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        user = user_repo.create({
+            "email": email or f"spotify_{spotify_user_id}@spotify.local",
+            "spotify_user_id": spotify_user_id,
+            "is_active": True,
+            "hashed_password": get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
+        })
 
         # Create profile
-        profile = Profile(user_id=user.id, name=user_profile.get("display_name", ""))
-        db.add(profile)
-        db.commit()
-        db.refresh(profile)
+        profile = profile_repo.create({
+            "user_id": user.id,
+            "name": user_profile.get("display_name", "")
+        })
 
         # Create preferences
-        preferences = Preferences(profile_id=profile.id, spotify_connected=True, spotify_data={
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_in": token_data.get("expires_in"),
-            "expires_at": expires_at,
-            "token_type": token_data.get("token_type"),
+        preferences = preferences_repo.create({
+            "profile_id": profile.id,
+            "spotify_connected": True,
+            "spotify_data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_in": token_data.get("expires_in"),
+                "expires_at": expires_at,
+                "token_type": token_data.get("token_type"),
+            }
         })
-        db.add(preferences)
-        db.commit()
-        db.refresh(preferences)
 
         # Fetch and store user data
         try:
             top_artists = await spotify_service.get_current_user_top_artists()
             top_tracks = await spotify_service.get_current_user_top_tracks()
-            setattr(preferences, "top_artists", [artist["name"] for artist in top_artists.get("items", [])])
-            setattr(preferences, "top_tracks", [track["name"] for track in top_tracks.get("items", [])])
+            preferences_repo.update(preferences, {
+                "top_artists": [artist["name"] for artist in top_artists.get("items", [])],
+                "top_tracks": [track["name"] for track in top_tracks.get("items", [])]
+            })
         except Exception as e:
             # Log error but don't fail login
             print(f"Error fetching user data: {e}")
             logger.logger.error(f"Error fetching Spotify user data: {e}", exc_info=True)
-
-        db.commit()
 
     # Generate JWT token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
