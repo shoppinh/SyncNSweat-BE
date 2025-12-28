@@ -75,6 +75,7 @@ resource "google_project_iam_member" "github_actions_roles" {
     "roles/iam.serviceAccountUser",   # Use service accounts
     "roles/storage.admin",            # Access Terraform state bucket
     "roles/cloudbuild.builds.editor", # Trigger Cloud Build
+    "roles/cloudscheduler.admin"      # Create/manage Cloud Scheduler jobs
   ])
 
   project = var.project_id
