@@ -1,10 +1,12 @@
 import random
 import time
 from typing import Any, Dict, List, Optional, cast
+
+from sqlalchemy.orm import Session
+
 from app.models.preferences import Preferences
 from app.models.profile import Profile
 from app.services.spotify import SpotifyService
-from sqlalchemy.orm import Session
 
 
 class PlaylistSelectorService:
@@ -57,23 +59,17 @@ class PlaylistSelectorService:
         if status in (401, 403):
             raise Exception(f"Spotify authentication failed during {context}: {err}")
 
-    # TODO: Use this method as fallback in playlist selection if Gemini API fails
-    def select_playlist_for_workout(
+    def shuffle_top_and_recent_tracks(
         self,
         fitness_goal: str,
-        music_genres: List[str],
-        music_tempo: str,
         duration_minutes: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Select a playlist for a workout based on the workout focus and user preferences.
         
         Args:
-            access_token: Spotify access token
-            workout_focus: The focus of the workout (e.g., "Upper Body", "Push")
-            music_genres: List of user's preferred music genres
-            music_tempo: User's preferred music tempo (e.g., "slow", "medium", "fast")
-            recently_used_playlists: List of recently used playlist IDs to avoid
+            fitness_goal: The fitness goal of the user (e.g., "Strength", "Endurance")
+            duration_minutes: Optional duration of the workout in minutes
             
         Returns:
             A dictionary with playlist information
@@ -85,21 +81,15 @@ class PlaylistSelectorService:
         user = self._api_get("/me")
         self._raise_if_auth_error(user, "GET /me")
         user_id = user.get("id")
-        user_country = user.get("country")
         if not user_id:
             raise Exception("Spotify authentication failed: missing user id")
 
         # Step 2: Fetch taste signals
         top_tracks_resp = self._api_get(
             "/me/top/tracks",
-            params={"limit": 10, "time_range": "medium_term"},
+            params={"limit": 50, "time_range": "medium_term"},
         )
         self._raise_if_auth_error(top_tracks_resp, "GET /me/top/tracks")
-        top_artists_resp = self._api_get(
-            "/me/top/artists",
-            params={"limit": 5, "time_range": "medium_term"},
-        )
-        self._raise_if_auth_error(top_artists_resp, "GET /me/top/artists")
         recent_resp = self._api_get(
             "/me/player/recently-played",
             params={"limit": 10},
@@ -107,114 +97,27 @@ class PlaylistSelectorService:
         self._raise_if_auth_error(recent_resp, "GET /me/player/recently-played")
 
         top_tracks_items = cast(List[Any], top_tracks_resp.get("items") or [])
-        top_artists_items = cast(List[Any], top_artists_resp.get("items") or [])
         recent_items_raw = cast(List[Any], recent_resp.get("items") or [])
         top_tracks = [cast(Dict[str, Any], t) for t in top_tracks_items if isinstance(t, dict)]
-        top_artists = [cast(Dict[str, Any], a) for a in top_artists_items if isinstance(a, dict)]
         recent_items = [cast(Dict[str, Any], i) for i in recent_items_raw if isinstance(i, dict)]
         recent_tracks = [cast(Dict[str, Any], i["track"]) for i in recent_items if isinstance(i.get("track"), dict)]
+        
+        # Step 2.5: Combine and shuffle
+        combined_tracks = top_tracks + recent_tracks
+        random.shuffle(combined_tracks)
 
-        # Step 3: Validate preferred genres
-        genre_seeds_resp = self._api_get("/recommendations/available-genre-seeds")
-        self._raise_if_auth_error(genre_seeds_resp, "GET /recommendations/available-genre-seeds")
-        available_genres = set(genre_seeds_resp.get("genres") or [])
-        requested_genres = [g.strip().lower() for g in (music_genres or []) if g and g.strip()]
-        requested_genres = requested_genres[:5]
-        validated_genres = [g for g in requested_genres if g in available_genres]
-
-        # Step 4: Select recommendation seeds (max total 5)
-        seed_track_ids: List[str] = []
-        for t in top_tracks[:3]:
-            tid = t.get("id")
-            if tid:
-                seed_track_ids.append(tid)
-
-        seed_artist_ids: List[str] = []
-        for a in top_artists[:2]:
-            aid = a.get("id")
-            if aid:
-                seed_artist_ids.append(aid)
-
-        remaining_seed_slots = max(0, 5 - (len(seed_track_ids) + len(seed_artist_ids)))
-        seed_genres = validated_genres[:remaining_seed_slots]
-
-        # Step 5: Compute average audio profile
-        avg_energy: Optional[float] = None
-        avg_valence: Optional[float] = None
-        avg_danceability: Optional[float] = None
-        avg_tempo: Optional[float] = None
-
-        if seed_track_ids:
-            features_resp = self._api_get(
-                "/audio-features",
-                params={"ids": ",".join(seed_track_ids)},
-            )
-            self._raise_if_auth_error(features_resp, "GET /v1/audio-features")
-            raw_features = cast(List[Any], features_resp.get("audio_features") or [])
-            features = [cast(Dict[str, Any], f) for f in raw_features if isinstance(f, dict)]
-
-            def _avg(key: str) -> Optional[float]:
-                vals: List[float] = []
-                for f in features:
-                    raw_val = f.get(key)
-                    if isinstance(raw_val, (int, float)):
-                        vals.append(float(raw_val))
-                if not vals:
-                    return None
-                return float(sum(vals) / len(vals))
-
-            avg_energy = _avg("energy")
-            avg_valence = _avg("valence")
-            avg_danceability = _avg("danceability")
-            avg_tempo = _avg("tempo")
-
-        # If audio features were missing, fall back to workout-derived targets
-        fallback_targets = self.calculate_target_params(fitness_goal,music_tempo)
-        target_energy = avg_energy if avg_energy is not None else fallback_targets.get("target_energy", 0.7)
-        target_tempo = avg_tempo if avg_tempo is not None else fallback_targets.get("target_tempo", 130)
-        target_valence = avg_valence if avg_valence is not None else 0.5
-        target_danceability = avg_danceability if avg_danceability is not None else 0.5
-
-        # Step 6: Request recommendations (retry once)
-        rec_params: Dict[str, Any] = {
-            "limit": 50,
-            "market": user_country,
-            "target_energy": target_energy,
-            "target_valence": target_valence,
-            "target_danceability": target_danceability,
-            "target_tempo": target_tempo,
-        }
-        if seed_track_ids:
-            rec_params["seed_tracks"] = ",".join(seed_track_ids)
-        if seed_artist_ids:
-            rec_params["seed_artists"] = ",".join(seed_artist_ids)
-        if seed_genres:
-            rec_params["seed_genres"] = ",".join(seed_genres)
-
-        recommendations_resp = self._api_get("/recommendations", params=rec_params)
-        self._raise_if_auth_error(recommendations_resp, "GET /recommendations")
-        rec_tracks_raw = cast(List[Any], recommendations_resp.get("tracks") or [])
-        rec_tracks = [cast(Dict[str, Any], t) for t in rec_tracks_raw if isinstance(t, dict)]
-        if not rec_tracks:
-            # one retry per spec
-            recommendations_resp = self._api_get("/recommendations", params=rec_params)
-            self._raise_if_auth_error(recommendations_resp, "GET /recommendations (retry)")
-            rec_tracks_raw = cast(List[Any], recommendations_resp.get("tracks") or [])
-            rec_tracks = [cast(Dict[str, Any], t) for t in rec_tracks_raw if isinstance(t, dict)]
-
-        # Step 7: Filter and enforce duration
-        seed_track_set = set(seed_track_ids)
+        # Step 3: Filter and enforce duration
         chosen_uris: List[str] = []
         total_ms = 0
         seen_track_ids: set[str] = set()
-
+        
         def _accumulate_from_tracks(tracks: List[Dict[str, Any]]) -> None:
             nonlocal total_ms
             for t in tracks:
                 if total_ms >= max_duration_ms:
                     break
                 tid = t.get("id")
-                if not tid or tid in seen_track_ids or tid in seed_track_set:
+                if not tid or tid in seen_track_ids:
                     continue
                 uri = t.get("uri")
                 dur = t.get("duration_ms")
@@ -224,21 +127,15 @@ class PlaylistSelectorService:
                 chosen_uris.append(uri)
                 total_ms += dur
 
-        _accumulate_from_tracks(rec_tracks)
+        _accumulate_from_tracks(combined_tracks)
 
         # If recommendations are empty, fall back to available tracks
         if not chosen_uris:
-            combined: List[Dict[str, Any]] = top_tracks + recent_tracks
-            random.shuffle(combined)
-            _accumulate_from_tracks(combined)
-
-        # If still empty, do not hard-fail (unless auth failed). Create an empty playlist.
-        # Step 8: Create playlist
+            raise Exception("No suitable tracks found for playlist creation")
+            
+        # Step 4: Create playlist
         safe_focus = (fitness_goal or "Workout").strip() or "Workout"
-        safe_tempo = (music_tempo or "").strip()
-        auto_name_parts = ["SyncNSweat", safe_focus]
-        if safe_tempo:
-            auto_name_parts.append(safe_tempo.capitalize())
+        auto_name_parts = ["SyncNSweat", safe_focus, "Randomized"]
         playlist_name = " ".join(auto_name_parts) + " Playlist"
         description = "Auto-generated fallback playlist with enforced duration"
 
@@ -266,7 +163,7 @@ class PlaylistSelectorService:
                 "createdAt": int(time.time()),
             }
 
-        # Step 9: Add tracks
+        # Step 5: Add tracks
         if chosen_uris:
             add_resp = self._api_post(
                 f"/playlists/{playlist_id}/tracks",

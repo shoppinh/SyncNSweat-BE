@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Dict
-from jose import jwt, JWTError
+from typing import Any, Dict, Optional, cast
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+
 from app.core.config import settings
 from app.db.session import get_db
 
@@ -16,7 +18,7 @@ pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/token")
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """
     Create a JWT access token.
 
@@ -99,8 +101,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
     try:
         payload = decode_token(token)
-        email: str = payload.get("sub")
-        if email is None:
+        email: str = payload.get("sub", "")
+        if not email:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
@@ -112,7 +114,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
 
-    if not user.is_active:
+    if not cast(bool,user.is_active):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user"
