@@ -144,3 +144,45 @@ resource "google_storage_bucket" "cloudbuild_logs" {
     }
   }
 }
+
+# ========================================
+# Cloud Scheduler Job
+# ========================================
+
+# The first one to start the cloud sql instances at specific time 
+resource "google_cloud_scheduler_job" "start_sql" {
+  name             = "start-cloudsql-instance"
+  description      = "Starts the Cloud SQL instance every morning"
+  schedule         = "0 8 * * 1-5" # 8:00 AM, Mon-Fri
+  time_zone        = "Asia/Bangkok"
+  attempt_deadline = "320s"
+
+  http_target {
+    http_method = "PATCH"
+    uri         = "https://sqladmin.googleapis.com/sql/v1beta4/projects/${var.project_id}/instances/${google_sql_database_instance.postgres.name}"
+    body        = base64encode("{\"settings\": {\"activationPolicy\": \"ALWAYS\"}}")
+
+    oauth_token {
+      service_account_email = data.terraform_remote_state.bootstrap.outputs.github_actions_service_account_email
+    }
+  }
+}
+
+# The second one to stop the cloud sql instances at specific time
+resource "google_cloud_scheduler_job" "stop_sql" {
+  name             = "stop-cloudsql-instance"
+  description      = "Stops the Cloud SQL instance every evening"
+  schedule         = "0 20 * * 1-5" # 8:00 PM, Mon-Fri
+  time_zone        = "Asia/Bangkok"
+  attempt_deadline = "320s"
+
+  http_target {
+    http_method = "PATCH"
+    uri         = "https://sqladmin.googleapis.com/sql/v1beta4/projects/${var.project_id}/instances/${google_sql_database_instance.postgres.name}"
+    body        = base64encode("{\"settings\": {\"activationPolicy\": \"NEVER\"}}")
+
+    oauth_token {
+      service_account_email = data.terraform_remote_state.bootstrap.outputs.github_actions_service_account_email
+    }
+  }
+}

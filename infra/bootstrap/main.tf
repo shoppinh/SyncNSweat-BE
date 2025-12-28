@@ -20,16 +20,17 @@
 # Enable required GCP APIs before any other resources
 resource "google_project_service" "services" {
   for_each = toset([
-    "run.googleapis.com",                 # Cloud Run
-    "artifactregistry.googleapis.com",    # Artifact Registry
-    "iamcredentials.googleapis.com",      # IAM Credentials (for Workload Identity)
-    "sqladmin.googleapis.com",            # Cloud SQL
-    "secretmanager.googleapis.com",       # Secret Manager
-    "compute.googleapis.com",             # Compute Engine (required for many services)
-    "cloudbuild.googleapis.com",          # Cloud Build
-    "sts.googleapis.com",                 # Security Token Service (for Workload Identity)
-    "iam.googleapis.com",                 # IAM
-    "cloudresourcemanager.googleapis.com" # Resource Manager
+    "run.googleapis.com",                  # Cloud Run
+    "artifactregistry.googleapis.com",     # Artifact Registry
+    "iamcredentials.googleapis.com",       # IAM Credentials (for Workload Identity)
+    "sqladmin.googleapis.com",             # Cloud SQL
+    "secretmanager.googleapis.com",        # Secret Manager
+    "compute.googleapis.com",              # Compute Engine (required for many services)
+    "cloudbuild.googleapis.com",           # Cloud Build
+    "sts.googleapis.com",                  # Security Token Service (for Workload Identity)
+    "iam.googleapis.com",                  # IAM
+    "cloudresourcemanager.googleapis.com", # Resource Manager
+    "cloudscheduler.googleapis.com",       # Cloud Scheduler
   ])
 
   project = var.project_id
@@ -72,7 +73,7 @@ resource "google_project_iam_member" "github_actions_roles" {
     "roles/cloudsql.admin",           # Create/manage Cloud SQL instances
     "roles/secretmanager.admin",      # Create/manage secrets, retrieve secret metadata
     "roles/iam.serviceAccountUser",   # Use service accounts
-    "roles/storage.admin",      # Access Terraform state bucket
+    "roles/storage.admin",            # Access Terraform state bucket
     "roles/cloudbuild.builds.editor", # Trigger Cloud Build
   ])
 
@@ -217,3 +218,5 @@ resource "google_secret_manager_secret_version" "bootstrap_complete" {
     region            = var.region
   })
 }
+
+
