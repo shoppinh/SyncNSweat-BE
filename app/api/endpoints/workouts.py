@@ -53,8 +53,30 @@ def read_workouts(
     
     return workouts
 
-@router.post("/suggest-workout-schedule", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
-async def suggest_workout_schedule(
+@router.get("/today", response_model=WorkoutResponse)
+def get_today_workout(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get today's workout.
+    """
+    workout_repo = WorkoutRepository(db)
+    today = datetime.now().date()
+
+    # Get workout for today
+    workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
+
+    if not workout:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No workout scheduled for today"
+        )
+
+    return workout
+
+@router.post("/today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
+async def suggest_today_workout(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -213,29 +235,6 @@ def create_workout(
             )
 
     return db_workout
-
-@router.get("/today", response_model=WorkoutResponse)
-def get_today_workout(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Get today's workout.
-    """
-    workout_repo = WorkoutRepository(db)
-    today = datetime.now().date()
-
-    # Get workout for today
-    workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
-
-    if not workout:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No workout scheduled for today"
-        )
-
-    return workout
-
 
 @router.get("/{workout_id}", response_model=WorkoutResponse)
 def read_workout(
@@ -441,7 +440,7 @@ def delete_workout_exercise(
     return None
 
 @router.post("/schedule", response_model=ScheduleResponse)
-def generate_workout_schedule(
+async def generate_workout_schedule(
     schedule_request: Optional[ScheduleRequest] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -490,7 +489,16 @@ def generate_workout_schedule(
     if existing_workouts and regenerate:
         for workout in existing_workouts:
             workout_repo.delete(workout)
-
+            
+            
+            
+    gemini_service = GeminiService(db,profile, preferences)
+    try:
+        schedule_response = await gemini_service.get_workout_and_playlist_schedule()
+        # TODO Implement the following logic here
+    except Exception as e:
+        print(f"Error generating workout schedule from Gemini: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating workout schedule: {str(e)}")
     # Generate new workout schedule
     scheduler_service = SchedulerService(db)
     workouts_data = scheduler_service.generate_weekly_schedule(

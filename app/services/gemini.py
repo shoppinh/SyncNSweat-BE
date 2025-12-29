@@ -92,6 +92,46 @@ class GeminiService:
                 "notes": "Unable to parse AI response. Please try again.",
                 "spotify_playlist": "default-workout-playlist"
             }
+            
+    async def get_workout_schedule_recommendations(self) -> List[Dict[str, Any]]:
+        """
+        Generate personalized workout schedule recommendations using the Gemini AI model asynchronously.
+        """
+        prompt = f"""
+        As a fitness expert, create a personalized weekly workout schedule for:
+        - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
+        - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
+        - Available days: {getattr(self.profile, "available_days", ['Monday', 'Wednesday', 'Friday'])}
+        - Workout duration: {getattr(self.profile, "workout_duration_minutes", 45)}
+        - Preferences:
+         + Available equipment: {getattr(self.preferences, "available_equipment", ['dumbbells', 'resistance bands'])}
+         + Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
+         + Exercise types: {getattr(self.preferences, "exercise_types", ['strength', 'cardio'])}
+
+        Format the response as a valid JSON array where each element is an object with the following keys:
+        - "date": The date of the workout in YYYY-MM-DD format.
+        - "focus": The primary focus of the workout (e.g., "upper body", "cardio").
+        - "duration_minutes": The recommended duration for the workout in minutes.
+        """
+        
+        
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+        except Exception as e:
+            print(f"Error generating AI response for workout schedule recommendations.{e}")
+            return []
+            
+        try:
+            # Clean up potential markdown formatting from the response
+            if response.text is None:
+                return []
+            cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
+            return json.loads(cleaned_response)
+        except (json.JSONDecodeError, AttributeError):
+            return []
 
     async def get_spotify_playlist_recommendations(self) -> Dict[str, Any]:
         # Fetch user's Spotify data
@@ -188,7 +228,14 @@ class GeminiService:
                 "playlist_recommendations": [],
                 "playlist_url": None
             }
-
+            
+    async def get_spotify_playlist_schedule_recommendations(self) -> List[Dict[str, Any]]:
+        """
+        Generate Spotify playlist recommendations for scheduled workouts.
+        """
+        # This method can be implemented similarly to get_spotify_playlist_recommendations,
+        # but tailored for multiple workout days if needed.
+        return []
     async def _retry_call(self, coro_func: Callable[..., Any], *coro_args: Any, retries: int = 2) -> Any:
         """Utility to retry an async coroutine function a small number of times."""
         last: Optional[Any] = None
@@ -302,6 +349,25 @@ class GeminiService:
 
         return {"workout_plan": workout_plan, "playlist": playlist_result}
     
+    async def get_workout_and_playlist_schedule(self) -> Dict[str, Any]:
+        """
+        Convenience method that returns both an AI workout plan and a Spotify playlist
+        recommendation/create result for scheduled workouts. Return a list of dicts with keys "workout_plan" and
+        "playlist". Any errors from either step are included in the corresponding
+        value as a message.
+        """
+        # Use class helpers to call LLM and normalize results
+        raw_plans = await self.get_workout_schedule_recommendations() 
+        workout_plans: List[Dict[str, Any]] = []
+        for raw_plan in raw_plans:
+            workout_plan = self._normalize_workout(raw_plan, self.profile)
+            workout_plans.append(workout_plan)
+
+        # Get or create Spotify playlist based on profile/preferences, with retry.
+        # 
+        playlist_result: List[Dict[str, Any]] = await self.get_spotify_playlist_schedule_recommendations()           
+
+        return {"workout_plans": workout_plans, "playlist": playlist_result}
     async def get_exercise_swap(self,current_exercise: Exercise,target_muscle_groups: List[str],fitness_level: str, available_equipment: List[str], recently_used_exercise_names: List[str]) -> Optional[Dict[str, Any]]:
         """
         Generate an alternative exercise targeting the same muscle group.
