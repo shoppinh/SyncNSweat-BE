@@ -23,8 +23,7 @@ def synchronize_database(
     
     # Delete all existing exercises
     # Note: This deletes directly via query for efficiency with bulk operations
-    db.query(exercise_repo.model).delete()
-    db.commit()
+    exercise_repo.delete_all()
     
     # Fetch all exercises from ExerciseDB API
     exercises = [{

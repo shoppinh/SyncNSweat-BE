@@ -197,11 +197,11 @@ async def refresh_playlist_for_workout(
     playlist_url = result.get("playlist_url", None)
 
     if playlist_id and playlist_name and playlist_url:
-        workout.playlist_id = playlist_id
-        workout.playlist_name = playlist_name
-        workout.playlist_url = playlist_url
-        db.add(workout)
-        db.commit()
+        workout_repo.update(workout, {
+            "playlist_id": playlist_id,
+            "playlist_name": playlist_name,
+            "playlist_url": playlist_url,
+        })
         return {
             "playlist_id": playlist_id,
             "playlist_name": playlist_name,
@@ -218,10 +218,11 @@ async def refresh_playlist_for_workout(
             duration_minutes=cast(int, profile.workout_duration_minutes),
         )
 
-        workout.playlist_id = playlist["id"]
-        workout.playlist_name = playlist["name"]
-        db.add(workout)
-        db.commit()
+        workout_repo.update(workout, {
+            "playlist_id": playlist["id"],
+            "playlist_name": playlist["name"],
+            "playlist_url": playlist["external_url"],
+        })
 
         return {
             "playlist_id": playlist["id"],
