@@ -134,7 +134,7 @@ async def suggest_today_workout(
 
     # Workout creation flow
     workout_plan: Dict[str, Any] = ai_plan.get("workout_plan", {})
-    workout_exercises = workout_plan.get("exercises", [])
+    workout_exercises = workout_plan.get("workout_exercises", [])
     # If workout_plan's exercises is missing or empty, use the fallback exercises selector
     
     if len(workout_exercises) == 0: 
@@ -489,34 +489,39 @@ async def generate_workout_schedule(
     if existing_workouts and regenerate:
         for workout in existing_workouts:
             workout_repo.delete(workout)
-            
-            
-            
     gemini_service = GeminiService(db,profile, preferences)
+    workouts_data: List[Dict[str, Any]] = []
     try:
         schedule_response = await gemini_service.get_workout_and_playlist_schedule()
-        # TODO Implement the following logic here
+        workouts_data = schedule_response.get("workout_plans", [])
     except Exception as e:
         print(f"Error generating workout schedule from Gemini: {e}")
-        raise HTTPException(status_code=500, detail=f"Error generating workout schedule: {str(e)}")
+        # Fallback to SchedulerService
     # Generate new workout schedule
-    scheduler_service = SchedulerService(db)
-    workouts_data = scheduler_service.generate_weekly_schedule(
-        user_id=cast(int, current_user.id),
-        available_days=cast(List[str], profile.available_days) if schedule_request else [],
-        fitness_goal=profile.fitness_goal.value,
-        fitness_level=profile.fitness_level.value,
-        available_equipment=cast(List[str], preferences.available_equipment) if schedule_request else [],
-        workout_duration_minutes=cast(int, profile.workout_duration_minutes) if schedule_request else 0
-    )
+        scheduler_service = SchedulerService(db)
+        workouts_data = scheduler_service.generate_weekly_schedule(
+            user_id=cast(int, current_user.id),
+            available_days=cast(List[str], profile.available_days) if schedule_request else [],
+            fitness_goal=profile.fitness_goal.value,
+            fitness_level=profile.fitness_level.value,
+            available_equipment=cast(List[str], preferences.available_equipment) if schedule_request else [],
+            workout_duration_minutes=cast(int, profile.workout_duration_minutes) if schedule_request else 0
+        )
 
     # Create workouts in the database
     created_workouts: List[Workout] = []
     for workout_data in workouts_data:
-        exercises = workout_data.pop("exercises", [])
+        exercises = workout_data.pop("workout_exercises", [])
 
         # Create workout
-        workout = workout_repo.create(workout_data)
+        workout = workout_repo.create({
+            "user_id": current_user.id,
+            "date": workout_data.get("date"),
+            "duration_minutes": workout_data.get("duration_minutes"),
+            "playlist_id": workout_data.get("playlist", {}).get("playlist_id"),
+            "playlist_name": workout_data.get("playlist", {}).get("playlist_name"),
+            "playlist_url": workout_data.get("playlist", {}).get("playlist_url"),
+        })
 
         # Add exercises to workout
         for i, exercise_data in enumerate(exercises):

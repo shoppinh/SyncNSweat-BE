@@ -187,7 +187,7 @@ async def refresh_playlist_for_workout(
     # Try to generate/create a playlist via GeminiService (which may call SpotifyService internally)
     gemini_service = GeminiService(db, profile, preferences)
     try:
-        result = await gemini_service.get_spotify_playlist_recommendations()
+        result = await gemini_service.get_spotify_playlist_recommendations(workout_exercises=workout.workout_exercises)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating playlist: {e}")
 

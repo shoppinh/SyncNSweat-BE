@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.preferences import Preferences
 from app.models.profile import FitnessLevel, Profile
-from app.models.workout import Exercise
+from app.models.workout import Exercise, Workout 
 from app.services.spotify import SpotifyService
 
 
@@ -18,7 +18,7 @@ class GeminiService:
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = 'gemini-2.5-flash'
+        self.model_name = 'gemini-2.5-flash-lite'
         self.spotify_service = SpotifyService(db, profile, preferences)  
         self.profile = profile
         self.preferences = preferences
@@ -40,7 +40,6 @@ class GeminiService:
         As a fitness expert, create a personalized workout plan for:
         - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
         - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
-        - Available days: {getattr(self.profile, "available_days", ['Monday', 'Wednesday', 'Friday'])}
         - Workout duration: {getattr(self.profile, "workout_duration_minutes", 45)}
         - Preferences:
          + Available equipment: {getattr(self.preferences, "available_equipment", ['dumbbells', 'resistance bands'])}
@@ -50,10 +49,9 @@ class GeminiService:
 
 
         Format the response as a valid JSON object with the following keys:
-        - "exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
-        - "intensity": an integer representing the overall workout intensity from 1 to 10.
+        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
+        - "focus": a string representing the workout focus, e.g., "Upper Body", "Lower Body", "Push", "Pull", "Legs".
         - "duration": an integer for the recommended workout duration in minutes.
-        - "notes": a string containing any specific form or safety tips.
         """
         
         
@@ -65,10 +63,8 @@ class GeminiService:
         except Exception as e:
             print(f"Error generating AI response for workout recommendations.{e}")
             return {
-                "exercises": [],
-                "intensity": 5,
+                "workout_exercises": [],
                 "duration": 45,
-                "notes": "Error generating AI response. Please try again.",
                 "spotify_playlist": "default-workout-playlist"
             }
             
@@ -76,20 +72,16 @@ class GeminiService:
             # Clean up potential markdown formatting from the response
             if response.text is None:
                 return {
-                    "exercises": [],
-                    "intensity": 5,
+                    "workout_exercises": [],
                     "duration": 45,
-                    "notes": "Response from AI is empty. Please try again.",
                     "spotify_playlist": "default-workout-playlist"
                 }
             cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
             return json.loads(cleaned_response)
         except (json.JSONDecodeError, AttributeError):
             return {
-                "exercises": [],
-                "intensity": 5,
+                "workout_exercises": [],
                 "duration": 45,
-                "notes": "Unable to parse AI response. Please try again.",
                 "spotify_playlist": "default-workout-playlist"
             }
             
@@ -97,21 +89,31 @@ class GeminiService:
         """
         Generate personalized workout schedule recommendations using the Gemini AI model asynchronously.
         """
+        
+        val = getattr(self.profile, "fitness_level", None)
+        if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
+            num_exercises = 8
+        elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
+            num_exercises = 6
+        else:
+            num_exercises = 4
         prompt = f"""
         As a fitness expert, create a personalized weekly workout schedule for:
         - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
         - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
         - Available days: {getattr(self.profile, "available_days", ['Monday', 'Wednesday', 'Friday'])}
         - Workout duration: {getattr(self.profile, "workout_duration_minutes", 45)}
+        - Number of exercises per day: {num_exercises}
         - Preferences:
          + Available equipment: {getattr(self.preferences, "available_equipment", ['dumbbells', 'resistance bands'])}
          + Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
          + Exercise types: {getattr(self.preferences, "exercise_types", ['strength', 'cardio'])}
 
         Format the response as a valid JSON array where each element is an object with the following keys:
-        - "date": The date of the workout in YYYY-MM-DD format.
-        - "focus": The primary focus of the workout (e.g., "upper body", "cardio").
-        - "duration_minutes": The recommended duration for the workout in minutes.
+        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
+        - "duration": an integer for the recommended workout duration in minutes.
+        - "focus": a string representing the workout focus, e.g., "Upper Body", "Lower Body", "Push", "Pull", "Legs".
+        - "day": the day of the week for this workout.
         """
         
         
@@ -133,7 +135,15 @@ class GeminiService:
         except (json.JSONDecodeError, AttributeError):
             return []
 
-    async def get_spotify_playlist_recommendations(self) -> Dict[str, Any]:
+    async def get_spotify_playlist_recommendations(self, workout: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """_summary_
+
+        Args:
+            workout_exercises (Optional[Dict[str, Any]], optional): _description_. Defaults to None.
+
+        Returns:
+            Dict[str, Any]: _description_
+        """       
         # Fetch user's Spotify data
         # This assumes you have the user's Spotify access token stored and refreshed
         if getattr(self.preferences, "spotify_data", None) is None:
@@ -149,7 +159,6 @@ class GeminiService:
             top_tracks = await self.spotify_service.get_current_user_top_tracks()
             # I want to check the results
             top_track_names = [track['name'] for track in top_tracks['items']]
-
             # Example: Get user's top artists
             top_artists = await self.spotify_service.get_current_user_top_artists()
             top_artist_names = [artist['name'] for artist in top_artists['items']]
@@ -165,11 +174,13 @@ class GeminiService:
             }
 
         prompt = f"""
-        You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences.
+        You are a music curator. Your goal is to recommend a Spotify playlist based on the user's preferences and current workout exercise.
         Here's the user's information:
         - Preferred Genres: {', '.join(getattr(self.preferences, "music_genres", [])) if getattr(self.preferences, "music_genres", []) else 'None'}
         - User's Top Tracks: {', '.join(top_track_names[:10]) if top_track_names else 'None'}
         - User's Top Artists: {', '.join(top_artist_names[:10]) if top_artist_names else 'None'}
+        - Current Workout Exercises : {', '.join([ex.get("name", "") for ex in workout.get("workout_exercises", [])]) if workout and workout.get("workout_exercises") else 'None'}
+        - Focus : {workout.get("focus") if workout else 'general fitness'}
 
         Please suggest the number of songs for a Spotify playlist to make sure it lasts exactly the duration of {getattr(self.profile, "workout_duration_minutes", 45)} minutes. 
         Provide the output in a structured JSON format with no additional text.
@@ -229,13 +240,119 @@ class GeminiService:
                 "playlist_url": None
             }
             
-    async def get_spotify_playlist_schedule_recommendations(self) -> List[Dict[str, Any]]:
+    async def get_spotify_playlist_schedule_recommendations(self, workouts: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+        """_summary_
+        Create a list of spotify playlist recommendations for scheduled workouts
+        Args:
+            workouts (Optional[Dict[str, Any]], optional): _description_. Defaults to None.
+
+        Returns:
+            List[Dict[str, Any]]: _description_
+        """        
+
+        if getattr(self.preferences, "spotify_data", None) is None:
+            print("Spotify data is not available. Please connect your Spotify account and try again.")
+            return []
+        try:
+            # Example: Get user's top tracks
+            top_tracks = await self.spotify_service.get_current_user_top_tracks()
+            # I want to check the results
+            top_track_names = [track['name'] for track in top_tracks['items']]
+
+            # Example: Get user's top artists
+            top_artists = await self.spotify_service.get_current_user_top_artists()
+            top_artist_names = [artist['name'] for artist in top_artists['items']]
+
+        except (json.JSONDecodeError, AttributeError):
+            # Catch 401 error here
+            print("Error fetching Spotify data. Please ensure your Spotify account is connected and try again.")
+            return []
+
+        prompt = f"""
+        You are a music curator. Your goal is to recommend a list of Spotify playlist based on the user's preferences and current workout exercise.
+        Here's the user's information:
+        - Preferred Genres: {', '.join(getattr(self.preferences, "music_genres", [])) if getattr(self.preferences, "music_genres", []) else 'None'}
+        - User's Top Tracks: {', '.join(top_track_names[:10]) if top_track_names else 'None'}
+        - User's Top Artists: {', '.join(top_artist_names[:10]) if top_artist_names else 'None'}
+        - Focus : {', '.join([workout.get("focus", "general fitness") for workout in workouts]) if workouts else 'general fitness'}
+        
+        
+        Each playlist has to last within a duration of {getattr(self.profile, "workout_duration_minutes", 45)} minutes.
+        
+                Return ONLY valid JSON (no markdown, comments, or surrounding text). The top-level value must be a JSON array where each element is an object representing one playlist:
+                - Each playlist object must contain a single key, "playlist_recommendations", whose value is a list of song objects.
+                - Each song object must contain exactly two string fields: "song_title" and "artist_name".
+                - Ensure each playlist in the array lasts approximately {getattr(self.profile, "workout_duration_minutes", 45)} minutes by choosing an appropriate number of songs.
+                - Do NOT include explanations, headings, code fences (```) or extraneous keys. Follow this exact shape and the example below.
+                Example output (strict JSON):
+                [
+                    {{
+                        "playlist_recommendations": [
+                            {{"song_title": "Song A", "artist_name": "Artist A"}},
+                            {{"song_title": "Song B", "artist_name": "Artist B"}}
+                        ]
+                    }},
+                    {{
+                        "playlist_recommendations": [
+                            {{"song_title": "Song C", "artist_name": "Artist C"}}
+                        ]
+                    }}
+                ]
         """
-        Generate Spotify playlist recommendations for scheduled workouts.
-        """
-        # This method can be implemented similarly to get_spotify_playlist_recommendations,
-        # but tailored for multiple workout days if needed.
-        return []
+
+        try:
+            response = await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=prompt
+        )
+            
+            if response.text is None:
+                print("Error generating playlist recommendations. Please try again.")
+                return []
+            
+            response_text = response.text.strip().lstrip('```json').rstrip('```').strip()
+            playlists_recommendations_json = json.loads(response_text)
+            
+            user_spotify_profile = await self.spotify_service.get_user_profile()
+
+
+            # Now, use your SpotifyClient to search for these tracks and potentially create a playlist
+            result:List[Dict[str, Any]] = []
+            for playlist_recommendations_json in playlists_recommendations_json:
+                recommended_tracks_uris:List[str] = []
+                for rec in playlist_recommendations_json['playlist_recommendations']:
+                    search_query = f"track:{rec['song_title']} artist:{rec['artist_name']}"
+                    search_results = await self.spotify_service.search_tracks(search_query=search_query)
+                    if search_results and search_results['tracks']['items']:
+                        recommended_tracks_uris.append(search_results['tracks']['items'][0]['uri'])
+
+                if recommended_tracks_uris:
+                    # Create a new playlist
+                    fitness_goal_val = getattr(self.profile, 'fitness_goal', None)
+                    fitness_goal_str = getattr(fitness_goal_val, 'value', None) or (str(fitness_goal_val) if fitness_goal_val is not None else 'general_fitness')
+                    fitness_level_val = getattr(self.profile, 'fitness_level', None)
+                    fitness_level_str = getattr(fitness_level_val, 'value', None) or (str(fitness_level_val) if fitness_level_val is not None else 'beginner')
+                    playlist_name = f"SyncNSweat - {self.profile.name} - {fitness_goal_str} - {fitness_level_str} - {datetime.now().strftime('%Y-%m-%d')} Playlist"
+                    new_playlist = await self.spotify_service.create_playlist(user_spotify_profile.get('id', ''), playlist_name, public=False, )
+                    if new_playlist:
+                        await self.spotify_service.add_tracks_to_playlist(new_playlist['id'], recommended_tracks_uris)
+                        result.append({
+                            "playlist_url": new_playlist['external_urls']['spotify'],
+                            "playlist_id": new_playlist['id'],
+                            "playlist_name": new_playlist['name']
+                        })
+                        
+                    else:
+                        print("Could not create Spotify playlist.")
+                        return []
+                else:
+                    print("No tracks found for the recommendations.")
+                    return []
+            return result
+        except Exception as e:
+            print(f"Error processing playlist recommendations: {e}")
+            return []
+        
     async def _retry_call(self, coro_func: Callable[..., Any], *coro_args: Any, retries: int = 2) -> Any:
         """Utility to retry an async coroutine function a small number of times."""
         last: Optional[Any] = None
@@ -296,15 +413,15 @@ class GeminiService:
     def _normalize_workout(self, raw_plan: Any, user_profile: Profile) -> Dict[str, Any]:
         """Normalize a raw LLM workout plan into a predictable dict shape."""
         fallback: Dict[str, Any] = {
-            "exercises": [],
-            "intensity": 5,
+            "workout_exercises": [],
             "duration": getattr(user_profile, "workout_duration_minutes", 45) or 45,
-            "notes": "Unable to generate a valid workout plan from the LLM."
+            "focus": None,
+            "day": None,
         }
         if not isinstance(raw_plan, dict):
             return fallback
 
-        exercises_raw = raw_plan.get("exercises") or []  # type: ignore
+        exercises_raw = raw_plan.get("workout_exercises") or []  # type: ignore
         normalized: List[Dict[str, Any]] = []
         if isinstance(exercises_raw, list):
             for ex in exercises_raw:
@@ -312,15 +429,15 @@ class GeminiService:
                 if norm:
                     normalized.append(norm)
 
-        intensity_val = raw_plan.get("intensity", 5)  # type: ignore
         duration_val = raw_plan.get("duration") or getattr(user_profile, "workout_duration_minutes", 45) or 45  # type: ignore
-        notes_val = raw_plan.get("notes") or None  # type: ignore
+        day_val = raw_plan.get("day") or None  # type: ignore
+        focus_val = raw_plan.get("focus") or None  # type: ignore
 
         out: Dict[str, Any] = {
-            "exercises": normalized,
-            "intensity": int(intensity_val) if isinstance(intensity_val, (int, float, str)) else 5,
+            "workout_exercises": normalized,
             "duration": int(duration_val) if duration_val else 45,  # type: ignore
-            "notes": notes_val,
+            "day": day_val,
+            "focus": focus_val,
         }
         return out
 
@@ -337,7 +454,7 @@ class GeminiService:
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
         # 
-        playlist_result: Dict[str, Any] = await self.get_spotify_playlist_recommendations()
+        playlist_result: Dict[str, Any] = await self.get_spotify_playlist_recommendations(workout= workout_plan)
         if not playlist_result: 
             playlist_result = {
                 "message": "Unable to generate playlist from LLM/Spotify.",
@@ -365,9 +482,12 @@ class GeminiService:
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
         # 
-        playlist_result: List[Dict[str, Any]] = await self.get_spotify_playlist_schedule_recommendations()           
-
-        return {"workout_plans": workout_plans, "playlist": playlist_result}
+        playlist_result: List[Dict[str, Any]] = await self.get_spotify_playlist_schedule_recommendations(workouts= workout_plans)           
+        
+        # Merge workout plans with their corresponding playlists
+        for i in range(min(len(workout_plans), len(playlist_result))):
+            workout_plans[i]['playlist'] = playlist_result[i]
+        return {"workout_plans": workout_plans}
     async def get_exercise_swap(self,current_exercise: Exercise,target_muscle_groups: List[str],fitness_level: str, available_equipment: List[str], recently_used_exercise_names: List[str]) -> Optional[Dict[str, Any]]:
         """
         Generate an alternative exercise targeting the same muscle group.
