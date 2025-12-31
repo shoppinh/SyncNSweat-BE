@@ -4,12 +4,12 @@ from pydantic import BaseModel, ConfigDict
 
 class ExerciseBase(BaseModel):
     name: str
-    instructions: Optional[List[str]] = None
+    body_part: Optional[str] = None
     target: str
     secondary_muscles: Optional[List[str]] = None
-    gif_url: Optional[str] = None
     equipment: Optional[str] = None
-    body_part: Optional[str] = None
+    gif_url: Optional[str] = None
+    instructions: Optional[List[str]] = None
 
 class ExerciseCreate(ExerciseBase):
     name: str
@@ -22,6 +22,7 @@ class ExerciseSearch(ExerciseBase):
 
 class ExerciseResponse(ExerciseBase):
     id: int
+    model_config = ConfigDict(from_attributes=True)
 
 class WorkoutExerciseBase(BaseModel):
     order: int

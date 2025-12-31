@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     SPOTIFY_REDIRECT_URL: str = os.getenv(
         "SPOTIFY_REDIRECT_URL", "http://localhost:8000"
     )
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+    # NOTE: Default used to be 11520 minutes (8 days). It was intentionally reduced to
+    # 60 minutes (1 hour) to improve security by limiting token lifetime. Deployments
+    # that require longer-lived tokens should set ACCESS_TOKEN_EXPIRE_MINUTES in
+    # the environment to override this default.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 
     # Spotify API settings
     SPOTIFY_CLIENT_ID: Optional[str] = os.getenv("SPOTIFY_CLIENT_ID")

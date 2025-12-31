@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.user import User
+from app.repositories.preferences import PreferencesRepository
 from app.schemas.profile import ProfileCreate, ProfileResponse, ProfileUpdate
 from app.schemas.preferences import PreferencesCreate, PreferencesResponse, PreferencesUpdate
 from app.core.security import get_current_user
@@ -140,6 +141,7 @@ def update_preferences_me(
     """
     Update current user's preferences.
     """
+    preferences_repo = PreferencesRepository(db)
     profile = ProfileService(db).get_profile_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
@@ -155,11 +157,6 @@ def update_preferences_me(
         )
     
     update_data = preferences_in.model_dump(exclude_unset=True)
-    # Reuse update_spotify_tokens for general preference updates when spotify fields are present,
-    # otherwise apply simple updates directly.
-    for field, value in update_data.items():
-        setattr(preferences, field, value)
-    db.add(preferences)
-    db.commit()
-    db.refresh(preferences)
+    preferences_repo.update(preferences, update_data)
+
     return preferences

@@ -105,3 +105,10 @@ class ExerciseRepository(BaseRepository[Exercise]):
         """
         self.db.bulk_insert_mappings(Exercise.__mapper__, exercises)
         self.db.commit()
+        
+    def delete_all(self) -> None:
+        """
+        Delete all exercises from the database.
+        """
+        self.db.query(Exercise).delete()
+        self.db.commit()

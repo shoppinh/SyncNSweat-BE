@@ -6,6 +6,7 @@ from app.schemas.exercise import WorkoutExerciseCreate, WorkoutExerciseResponse
 class WorkoutBase(BaseModel):
     date: datetime
     duration_minutes: Optional[int] = None
+    focus: Optional[str] = None
     playlist_id: Optional[str] = None
     playlist_name: Optional[str] = None
     playlist_url: Optional[str] = None
