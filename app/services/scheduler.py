@@ -84,7 +84,7 @@ class SchedulerService:
                 workout_duration_minutes=workout_duration_minutes
             )
             
-            workout["exercises"] = exercises
+            workout["workout_exercises"] = exercises
             workouts.append(workout)
         
         return workouts

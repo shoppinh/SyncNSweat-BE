@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.preferences import Preferences
 from app.models.profile import FitnessLevel, Profile
-from app.models.workout import Exercise, Workout 
+from app.models.workout import Exercise 
 from app.services.spotify import SpotifyService
 
 
@@ -28,13 +28,8 @@ class GeminiService:
         Generate personalized workout recommendations using the Gemini AI model asynchronously.
         """
         # Determine number of exercises without evaluating SQLAlchemy ColumnElement truthiness
-        val = getattr(self.profile, "fitness_level", None)
-        if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
-            num_exercises = 8
-        elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
-            num_exercises = 6
-        else:
-            num_exercises = 4
+        # 
+        num_exercises = self._get_num_exercises_based_on_fitness_level() 
 
         prompt = f"""
         As a fitness expert, create a personalized workout plan for:
@@ -49,9 +44,9 @@ class GeminiService:
 
 
         Format the response as a valid JSON object with the following keys:
-        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
+        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to an available and accessible GIF demonstration . The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
         - "focus": a string representing the workout focus, e.g., "Upper Body", "Lower Body", "Push", "Pull", "Legs".
-        - "duration": an integer for the recommended workout duration in minutes.
+        - "duration_minutes": an integer for the recommended workout duration in minutes.
         """
         
         
@@ -61,10 +56,10 @@ class GeminiService:
                 contents=prompt
             )
         except Exception as e:
-            print(f"Error generating AI response for workout recommendations.{e}")
+            print(f"Error generating AI response for workout recommendations. {e}")
             return {
                 "workout_exercises": [],
-                "duration": 45,
+                "duration_minutes": 45,
                 "spotify_playlist": "default-workout-playlist"
             }
             
@@ -73,7 +68,7 @@ class GeminiService:
             if response.text is None:
                 return {
                     "workout_exercises": [],
-                    "duration": 45,
+                    "duration_minutes": 45,
                     "spotify_playlist": "default-workout-playlist"
                 }
             cleaned_response = response.text.strip().lstrip('```json').rstrip('```').strip()
@@ -81,22 +76,28 @@ class GeminiService:
         except (json.JSONDecodeError, AttributeError):
             return {
                 "workout_exercises": [],
-                "duration": 45,
+                "duration_minutes": 45,
                 "spotify_playlist": "default-workout-playlist"
             }
             
+    def _get_num_exercises_based_on_fitness_level(self) -> int:
+        """
+        Determine the number of exercises based on the user's fitness level.
+        """
+        val = getattr(self.profile, "fitness_level", None)
+        if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
+            return 8
+        elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
+            return 6
+        else:
+            return 4
+
     async def get_workout_schedule_recommendations(self) -> List[Dict[str, Any]]:
         """
         Generate personalized workout schedule recommendations using the Gemini AI model asynchronously.
         """
         
-        val = getattr(self.profile, "fitness_level", None)
-        if isinstance(val, FitnessLevel) and val == FitnessLevel.ADVANCED:
-            num_exercises = 8
-        elif isinstance(val, FitnessLevel) and val == FitnessLevel.INTERMEDIATE:
-            num_exercises = 6
-        else:
-            num_exercises = 4
+        num_exercises = self._get_num_exercises_based_on_fitness_level()
         prompt = f"""
         As a fitness expert, create a personalized weekly workout schedule for:
         - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
@@ -110,10 +111,10 @@ class GeminiService:
          + Exercise types: {getattr(self.preferences, "exercise_types", ['strength', 'cardio'])}
 
         Format the response as a valid JSON array where each element is an object with the following keys:
-        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to a demonstration GIF if available. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
-        - "duration": an integer for the recommended workout duration in minutes.
+        - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "gif_url", "instructions". The "instructions" should be a list of step-by-step strings. The "gif_url" should be a link to an available and accessible demonstration GIF . The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
+        - "duration_minutes": an integer for the recommended workout duration in minutes.
         - "focus": a string representing the workout focus, e.g., "Upper Body", "Lower Body", "Push", "Pull", "Legs".
-        - "day": the day of the week for this workout.
+        - "date": the day of the week for this workout.
         """
         
         
@@ -123,7 +124,7 @@ class GeminiService:
                 contents=prompt
             )
         except Exception as e:
-            print(f"Error generating AI response for workout schedule recommendations.{e}")
+            print(f"Error generating AI response for workout schedule recommendations. {e}")
             return []
             
         try:
@@ -137,9 +138,10 @@ class GeminiService:
 
     async def get_spotify_playlist_recommendations(self, workout: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """_summary_
+        Create spotify playlist recommendations based on user's preferences and current workout
 
         Args:
-            workout_exercises (Optional[Dict[str, Any]], optional): _description_. Defaults to None.
+            workout (Optional[Dict[str, Any]], optional): _description_. Defaults to None.
 
         Returns:
             Dict[str, Any]: _description_
@@ -242,13 +244,29 @@ class GeminiService:
             
     async def get_spotify_playlist_schedule_recommendations(self, workouts: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """_summary_
-        Create a list of spotify playlist recommendations for scheduled workouts
+       
+        Generate Spotify playlist recommendations for a set of scheduled workouts.
+
+        This method uses the user's stored Spotify preferences (such as top tracks,
+        top artists, and preferred genres) together with the provided scheduled
+        workouts to ask the Gemini model for suitable playlist suggestions.
+
         Args:
-            workouts (Optional[Dict[str, Any]], optional): _description_. Defaults to None.
+            workouts: Optional list of dictionaries describing scheduled workouts
+                for which playlist recommendations should be generated. Each
+                dictionary is expected to contain basic metadata about a workout
+                (for example, name, type, duration, or intensity) that can be
+                included in the model prompt. If None, the method will rely only
+                on the user's Spotify data and any default workout context.
 
         Returns:
-            List[Dict[str, Any]]: _description_
-        """        
+            List[Dict[str, Any]]: A list of playlist recommendation objects. Each
+                item typically corresponds to one scheduled workout and includes
+                model-generated metadata describing the workout context and one or
+                more recommended Spotify playlists or tracks suitable for that
+                workout. An empty list is returned if Spotify data is unavailable
+                or an error occurs while fetching the user's Spotify information.
+        """
 
         if getattr(self.preferences, "spotify_data", None) is None:
             print("Spotify data is not available. Please connect your Spotify account and try again.")
@@ -414,9 +432,9 @@ class GeminiService:
         """Normalize a raw LLM workout plan into a predictable dict shape."""
         fallback: Dict[str, Any] = {
             "workout_exercises": [],
-            "duration": getattr(user_profile, "workout_duration_minutes", 45) or 45,
+            "duration_minutes": getattr(user_profile, "workout_duration_minutes", 45) or 45,
             "focus": None,
-            "day": None,
+            "date": None,
         }
         if not isinstance(raw_plan, dict):
             return fallback
@@ -429,14 +447,14 @@ class GeminiService:
                 if norm:
                     normalized.append(norm)
 
-        duration_val = raw_plan.get("duration") or getattr(user_profile, "workout_duration_minutes", 45) or 45  # type: ignore
-        day_val = raw_plan.get("day") or None  # type: ignore
+        duration_val = raw_plan.get("duration_minutes") or getattr(user_profile, "workout_duration_minutes", 45) or 45  # type: ignore
+        date_val = raw_plan.get("date") or None  # type: ignore
         focus_val = raw_plan.get("focus") or None  # type: ignore
 
         out: Dict[str, Any] = {
             "workout_exercises": normalized,
-            "duration": int(duration_val) if duration_val else 45,  # type: ignore
-            "day": day_val,
+            "duration_minutes": int(duration_val) if duration_val else 45,  # type: ignore
+            "date": date_val,
             "focus": focus_val,
         }
         return out

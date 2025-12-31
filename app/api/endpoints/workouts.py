@@ -22,6 +22,7 @@ from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.playlist_selector import PlaylistSelectorService
 from app.services.scheduler import SchedulerService
+from app.utils.datetime import get_date_in_current_week
 
 # Define constants for error messages
 WORKOUT_NOT_FOUND = "Workout not found"
@@ -153,6 +154,7 @@ async def suggest_today_workout(
     db_workout = workout_repo.create({
         "user_id": current_user.id,
         "duration_minutes": profile.workout_duration_minutes,
+        "focus": workout_plan.get("focus", "General"),
         "date": datetime.now(),
         "playlist_id": playlist_id,
         "playlist_name": playlist_name,
@@ -216,7 +218,6 @@ def create_workout(
     """
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
-    
     workout_data = workout_in.model_dump(exclude={"exercises"})
     workout_data["user_id"] = current_user.id
     db_workout = workout_repo.create(workout_data)
@@ -225,6 +226,7 @@ def create_workout(
     if workout_in.exercises:
         for i, exercise_in in enumerate(workout_in.exercises):
             exercise_data = exercise_in.model_dump()
+            
             workout_exercise_repo.create_with_composite_key(
                 workout_id=cast(int, db_workout.id),
                 exercise_id=cast(int, exercise_data["exercise_id"]),
@@ -452,6 +454,7 @@ async def generate_workout_schedule(
     preferences_repo = PreferencesRepository(db)
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
+    exercise_repo = ExerciseRepository(db)
     
     # Get user profile
     profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
@@ -497,15 +500,15 @@ async def generate_workout_schedule(
     except Exception as e:
         print(f"Error generating workout schedule from Gemini: {e}")
         # Fallback to SchedulerService
-    # Generate new workout schedule
+        # Generate new workout schedule
         scheduler_service = SchedulerService(db)
         workouts_data = scheduler_service.generate_weekly_schedule(
             user_id=cast(int, current_user.id),
-            available_days=cast(List[str], profile.available_days) if schedule_request else [],
+            available_days=cast(List[str], profile.available_days),
             fitness_goal=profile.fitness_goal.value,
             fitness_level=profile.fitness_level.value,
-            available_equipment=cast(List[str], preferences.available_equipment) if schedule_request else [],
-            workout_duration_minutes=cast(int, profile.workout_duration_minutes) if schedule_request else 0
+            available_equipment=cast(List[str], preferences.available_equipment),
+            workout_duration_minutes=cast(int, profile.workout_duration_minutes)
         )
 
     # Create workouts in the database
@@ -516,8 +519,9 @@ async def generate_workout_schedule(
         # Create workout
         workout = workout_repo.create({
             "user_id": current_user.id,
-            "date": workout_data.get("date"),
+            "date": get_date_in_current_week(workout_data.get("date", "monday")),
             "duration_minutes": workout_data.get("duration_minutes"),
+            "focus": workout_data.get("focus", "General"),
             "playlist_id": workout_data.get("playlist", {}).get("playlist_id"),
             "playlist_name": workout_data.get("playlist", {}).get("playlist_name"),
             "playlist_url": workout_data.get("playlist", {}).get("playlist_url"),
@@ -525,9 +529,34 @@ async def generate_workout_schedule(
 
         # Add exercises to workout
         for i, exercise_data in enumerate(exercises):
+            name = exercise_data.get("name")
+            if not name:
+                # Skip malformed entry
+                continue
+
+            # Find existing exercise by name (case-insensitive).
+            # First try an exact case-insensitive match, then fall back to a contains match
+            # (useful when AI returns slightly different spacing/casing).
+            name_clean = str(name).strip()
+            exercise_obj = exercise_repo.get_by_name_exact(name_clean)
+
+            if not exercise_obj:
+                results = exercise_repo.search_by_name(name_clean, limit=1)
+                exercise_obj = results[0] if results else None
+                if not exercise_obj:
+                    exercise_obj = exercise_repo.create({
+                        "name": name,
+                        "target": exercise_data.get("target") or "General",
+                        "body_part": exercise_data.get("body_part") or exercise_data.get("bodyPart") or "General",
+                        "secondary_muscles": exercise_data.get("secondary_muscles") if isinstance(exercise_data.get("secondary_muscles"), list) else None,
+                        "equipment": exercise_data.get("machine") or exercise_data.get("equipment") or None,
+                        "gif_url": exercise_data.get("gif_url") or exercise_data.get("gifUrl") or None,
+                        "instructions": exercise_data.get("instructions") if isinstance(exercise_data.get("instructions"), list) else None,
+                    })
+
             workout_exercise_repo.create_with_composite_key(
                 workout_id=cast(int, workout.id),
-                exercise_id=exercise_data["exercise_id"],
+                exercise_id=cast(int, exercise_obj.id),
                 order=i + 1,
                 sets=exercise_data.get("sets"),
                 reps=exercise_data.get("reps"),
@@ -535,7 +564,7 @@ async def generate_workout_schedule(
             )
 
         created_workouts.append(workout)
-
+        
     return ScheduleResponse(
         workouts=cast(List[WorkoutResponse], created_workouts),
         message="Generated new workout schedule"
