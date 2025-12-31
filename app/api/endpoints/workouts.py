@@ -67,13 +67,12 @@ def get_today_workout(
 
     # Get workout for today
     workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
-
+    
     if not workout:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No workout scheduled for today"
+            detail=NO_WORKOUT_TODAY
         )
-
     return workout
 
 @router.post("/today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)

@@ -5,6 +5,7 @@ from datetime import date
 from typing import List, Optional
 
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import func
 
 from app.models.workout import Workout, WorkoutExercise
 from app.repositories.base import BaseRepository
@@ -72,8 +73,8 @@ class WorkoutRepository(BaseRepository[Workout]):
         return (
             self.db.query(Workout)
             .filter(Workout.user_id == user_id)
-            .filter(Workout.date >= start_date)
-            .filter(Workout.date <= end_date)
+            .filter(func.date(Workout.date) >= start_date)
+            .filter(func.date(Workout.date) <= end_date)
             .all()
         )
 
@@ -91,7 +92,9 @@ class WorkoutRepository(BaseRepository[Workout]):
         return (
             self.db.query(Workout)
             .filter(Workout.user_id == user_id)
-            .filter(Workout.date == workout_date)
+            .filter(func.date(Workout.date) == workout_date)
+            # sort by most recent in case of multiple entries
+            .order_by(Workout.date.desc())
             .first()
         )
 
