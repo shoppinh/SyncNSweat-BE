@@ -13,16 +13,24 @@ from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.workout import WorkoutRepository
 from app.repositories.workout_exercise import WorkoutExerciseRepository
-from app.schemas.exercise import (WorkoutExerciseCreate,
-                                  WorkoutExerciseResponse,
-                                  WorkoutExerciseUpdate)
-from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
-                                 WorkoutCreate, WorkoutResponse, WorkoutUpdate)
+from app.schemas.exercise import (
+    WorkoutExerciseCreate,
+    WorkoutExerciseResponse,
+    WorkoutExerciseUpdate,
+)
+from app.schemas.workout import (
+    ScheduleRequest,
+    ScheduleResponse,
+    WorkoutCreate,
+    WorkoutResponse,
+    WorkoutUpdate,
+)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.playlist_selector import PlaylistSelectorService
 from app.services.scheduler import SchedulerService
 from app.utils.datetime import get_date_in_current_week
+from app.utils.fuzzy import get_top_candidate_by_repo
 
 # Define constants for error messages
 WORKOUT_NOT_FOUND = "Workout not found"
@@ -33,6 +41,7 @@ NO_WORKOUT_TODAY = "No workout scheduled for today"
 
 router = APIRouter()
 
+
 @router.get("/", response_model=List[WorkoutResponse])
 def read_workouts(
     skip: int = 0,
@@ -40,24 +49,28 @@ def read_workouts(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get all workouts for the current user.
     """
     workout_repo = WorkoutRepository(db)
-    
+
     if start_date and end_date:
-        workouts = workout_repo.get_by_date_range(cast(int, current_user.id), start_date.date(), end_date.date())
+        workouts = workout_repo.get_by_date_range(
+            cast(int, current_user.id), start_date.date(), end_date.date()
+        )
     else:
-        workouts = workout_repo.get_all_with_exercises(cast(int, current_user.id), skip, limit)
-    
+        workouts = workout_repo.get_all_with_exercises(
+            cast(int, current_user.id), skip, limit
+        )
+
     return workouts
+
 
 @router.get("/today", response_model=WorkoutResponse)
 def get_today_workout(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
     Get today's workout.
@@ -67,18 +80,19 @@ def get_today_workout(
 
     # Get workout for today
     workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
-    
+
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=NO_WORKOUT_TODAY
+            status_code=status.HTTP_404_NOT_FOUND, detail=NO_WORKOUT_TODAY
         )
     return workout
 
-@router.post("/today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED
+)
 async def suggest_today_workout(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
     Create a workout with spotify playlist for the current user using AI recommendations and persist it.
@@ -93,26 +107,30 @@ async def suggest_today_workout(
     preferences_repo = PreferencesRepository(db)
     workout_repo = WorkoutRepository(db)
     exercise_repo = ExerciseRepository(db)
-    
+
     # Load profile and preferences
     profile = profile_repo.get_by_user_id(cast(int, current_user.id))
     if not profile:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND
+        )
 
     preferences = preferences_repo.get_by_profile_id(cast(int, profile.id))
     if not preferences:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND)
-
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
+        )
 
     # Instantiate GeminiService directly so we can pass db/current_user
-    gemini_service = GeminiService(db,profile, preferences)
-
+    gemini_service = GeminiService(db, profile, preferences)
 
     try:
         ai_plan = await gemini_service.get_workout_and_playlist()
     except Exception as e:
         print(f"Error generating AI recommendations: {e}")
-        raise HTTPException(status_code=500, detail=f"Error generating AI recommendations: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating AI recommendations: {str(e)}"
+        )
 
     # Create workout record
     playlist: Dict[str, str] = ai_plan.get("playlist") or {}
@@ -122,22 +140,21 @@ async def suggest_today_workout(
 
     if not playlist_url:
         print("AI did not return a playlist URL, proceeding without playlist.")
-        playlist_selector = PlaylistSelectorService(db,profile, preferences)
+        playlist_selector = PlaylistSelectorService(db, profile, preferences)
         playlist_data = playlist_selector.shuffle_top_and_recent_tracks(
             fitness_goal=profile.fitness_goal.value,
-            duration_minutes=cast(int, profile.workout_duration_minutes)
+            duration_minutes=cast(int, profile.workout_duration_minutes),
         )
         playlist_id = playlist_data.get("playlist_id")
         playlist_name = playlist_data.get("playlist_name")
         playlist_url = playlist_data.get("playlist_url")
-        
 
     # Workout creation flow
     workout_plan: Dict[str, Any] = ai_plan.get("workout_plan", {})
     workout_exercises = workout_plan.get("workout_exercises", [])
     # If workout_plan's exercises is missing or empty, use the fallback exercises selector
-    
-    if len(workout_exercises) == 0: 
+
+    if len(workout_exercises) == 0:
         print("AI did not return exercises, using ExerciseSelectorService as fallback.")
         exercise_selector = ExerciseSelectorService(db)
         selected_exercises = exercise_selector.select_exercises_for_workout(
@@ -146,29 +163,35 @@ async def suggest_today_workout(
             available_equipment=cast(List[str], preferences.available_equipment),
             target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
             workout_duration_minutes=cast(int, profile.workout_duration_minutes),
-            recently_used_exercises=[]
+            recently_used_exercises=[],
         )
         workout_exercises = selected_exercises
-    
-    db_workout = workout_repo.create({
-        "user_id": current_user.id,
-        "duration_minutes": profile.workout_duration_minutes,
-        "focus": workout_plan.get("focus", "General"),
-        "date": datetime.now(),
-        "playlist_id": playlist_id,
-        "playlist_name": playlist_name,
-        "playlist_url": playlist_url
-    })
+
+    db_workout = workout_repo.create(
+        {
+            "user_id": current_user.id,
+            "duration_minutes": profile.workout_duration_minutes,
+            "focus": workout_plan.get("focus", "General"),
+            "date": datetime.now(),
+            "playlist_id": playlist_id,
+            "playlist_name": playlist_name,
+            "playlist_url": playlist_url,
+        }
+    )
 
     created_workout_exercises: List[WorkoutExercise] = []
 
     for idx, workout_ex in enumerate(workout_exercises):
         # Extract fields from AI response with safe fallbacks
-        name = workout_ex.get("name") or workout_ex.get("exercise") 
+        name = workout_ex.get("name") or workout_ex.get("exercise")
         sets = workout_ex.get("sets") or 1
         reps = workout_ex.get("reps") or ""
         # AI may return rest in seconds; store seconds in DB
-        rest_seconds = workout_ex.get("rest_seconds") if workout_ex.get("rest_seconds") is not None else 180 
+        rest_seconds = (
+            workout_ex.get("rest_seconds")
+            if workout_ex.get("rest_seconds") is not None
+            else 180
+        )
 
         if not name:
             # Skip malformed entry
@@ -178,20 +201,38 @@ async def suggest_today_workout(
         # First try an exact case-insensitive match, then fall back to a contains match
         # (useful when AI returns slightly different spacing/casing).
         name_clean = str(name).strip()
-        exercise_obj = exercise_repo.get_by_name_exact(name_clean)
-        if not exercise_obj:
+        # Prefer a fuzzy match against existing DB exercises first
+        best = get_top_candidate_by_repo(name_clean, exercise_repo, score_cutoff=80.0)
+        if best:
+            exercise_obj = exercise_repo.get_by_id(best.id)
+        else:
+            # Fallback to a simple partial search
             results = exercise_repo.search_by_name(name_clean, limit=1)
             exercise_obj = results[0] if results else None
+
         if not exercise_obj:
-            exercise_obj = exercise_repo.create({
-                "name": name,
-                "target": workout_ex.get("target") or "General",
-                "body_part": workout_ex.get("body_part") or workout_ex.get("bodyPart") or "General",
-                "secondary_muscles": workout_ex.get("secondary_muscles") if isinstance(workout_ex.get("secondary_muscles"), list) else None,
-                "equipment": workout_ex.get("machine") or workout_ex.get("equipment") or None,
-                "gif_url": workout_ex.get("gif_url") or workout_ex.get("gifUrl") or None,
-                "instructions": workout_ex.get("instructions") if isinstance(workout_ex.get("instructions"), list) else None,
-            })
+            # Need to use 3rd party API to get the gif_url and other details?
+            exercise_obj = exercise_repo.create(
+                {
+                    "name": name,
+                    "target": workout_ex.get("target") or "General",
+                    "body_part": workout_ex.get("body_part")
+                    or workout_ex.get("bodyPart")
+                    or "General",
+                    "secondary_muscles": workout_ex.get("secondary_muscles")
+                    if isinstance(workout_ex.get("secondary_muscles"), list)
+                    else None,
+                    "equipment": workout_ex.get("machine")
+                    or workout_ex.get("equipment")
+                    or None,
+                    "gif_url": workout_ex.get("gif_url")
+                    or workout_ex.get("gifUrl")
+                    or None,
+                    "instructions": workout_ex.get("instructions")
+                    if isinstance(workout_ex.get("instructions"), list)
+                    else None,
+                }
+            )
 
         workout_ex_repo = WorkoutExerciseRepository(db)
         workout_ex_to_create = workout_ex_repo.create_with_composite_key(
@@ -200,17 +241,18 @@ async def suggest_today_workout(
             sets=int(sets) if sets is not None else None,
             reps=str(reps) if reps is not None else None,
             order=idx + 1,
-            rest_seconds=rest_seconds
+            rest_seconds=rest_seconds,
         )
         created_workout_exercises.append(workout_ex_to_create)
 
     return db_workout
 
+
 @router.post("/", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
 def create_workout(
     workout_in: WorkoutCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create a new workout for the current user.
@@ -225,55 +267,59 @@ def create_workout(
     if workout_in.exercises:
         for i, exercise_in in enumerate(workout_in.exercises):
             exercise_data = exercise_in.model_dump()
-            
+
             workout_exercise_repo.create_with_composite_key(
                 workout_id=cast(int, db_workout.id),
                 exercise_id=cast(int, exercise_data["exercise_id"]),
                 order=i + 1,
                 sets=exercise_data.get("sets"),
                 reps=exercise_data.get("reps"),
-                rest_seconds=exercise_data.get("rest_seconds")
+                rest_seconds=exercise_data.get("rest_seconds"),
             )
 
     return db_workout
+
 
 @router.get("/{workout_id}", response_model=WorkoutResponse)
 def read_workout(
     workout_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get a specific workout by ID.
     """
     workout_repo = WorkoutRepository(db)
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     return workout
+
 
 @router.put("/{workout_id}", response_model=WorkoutResponse)
 def update_workout(
     workout_id: int,
     workout_in: WorkoutUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update a specific workout.
     """
     workout_repo = WorkoutRepository(db)
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     # Update workout fields
@@ -281,72 +327,82 @@ def update_workout(
     workout = workout_repo.update(workout, update_data)
     return workout
 
+
 @router.delete("/{workout_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workout(
     workout_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Delete a specific workout.
     """
     workout_repo = WorkoutRepository(db)
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     workout_repo.delete(workout)
     return None
 
+
 @router.get("/{workout_id}/exercises", response_model=List[WorkoutExerciseResponse])
 def read_workout_exercises(
     workout_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get all exercises for a specific workout.
     """
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
-    
+
     # Check if workout exists and belongs to user
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     exercises = workout_exercise_repo.get_by_workout_id(workout_id)
 
     return exercises
 
-@router.post("/{workout_id}/exercises", response_model=WorkoutExerciseResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/{workout_id}/exercises",
+    response_model=WorkoutExerciseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def add_workout_exercise(
     workout_id: int,
     exercise_in: WorkoutExerciseCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Add an exercise to a specific workout.
     """
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
-    
+
     # Check if workout exists and belongs to user
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     # Get the highest order value
@@ -364,32 +420,36 @@ def add_workout_exercise(
         order=next_order,
         sets=exercise_data.get("sets"),
         reps=exercise_data.get("reps"),
-        rest_seconds=exercise_data.get("rest_seconds")
+        rest_seconds=exercise_data.get("rest_seconds"),
     )
 
     return db_exercise
 
-@router.put("/{workout_id}/exercises/{exercise_id}", response_model=WorkoutExerciseResponse)
+
+@router.put(
+    "/{workout_id}/exercises/{exercise_id}", response_model=WorkoutExerciseResponse
+)
 def update_workout_exercise(
     workout_id: int,
     exercise_id: int,
     exercise_in: WorkoutExerciseUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update a specific exercise in a workout.
     """
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
-    
+
     # Check if workout exists and belongs to user
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     # Get the exercise
@@ -397,8 +457,7 @@ def update_workout_exercise(
 
     if not exercise:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=EXERCISE_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=EXERCISE_NOT_FOUND
         )
 
     # Update exercise fields
@@ -406,26 +465,30 @@ def update_workout_exercise(
     exercise = workout_exercise_repo.update(exercise, update_data)
     return exercise
 
-@router.delete("/{workout_id}/exercises/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT)
+
+@router.delete(
+    "/{workout_id}/exercises/{exercise_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 def delete_workout_exercise(
     workout_id: int,
     exercise_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Delete a specific exercise from a workout.
     """
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
-    
+
     # Check if workout exists and belongs to user
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     # Get the exercise
@@ -433,18 +496,18 @@ def delete_workout_exercise(
 
     if not exercise:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=EXERCISE_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=EXERCISE_NOT_FOUND
         )
 
     workout_exercise_repo.delete(exercise)
     return None
 
+
 @router.post("/schedule", response_model=ScheduleResponse)
 async def generate_workout_schedule(
     schedule_request: Optional[ScheduleRequest] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Generate a weekly workout schedule based on user preferences.
@@ -454,21 +517,19 @@ async def generate_workout_schedule(
     workout_repo = WorkoutRepository(db)
     workout_exercise_repo = WorkoutExerciseRepository(db)
     exercise_repo = ExerciseRepository(db)
-    
+
     # Get user profile
     profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND
         )
 
     # Get user preferences
     preferences = preferences_repo.get_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PREFERENCES_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
         )
 
     # Check if regenerate flag is set
@@ -478,20 +539,22 @@ async def generate_workout_schedule(
     today = datetime.now().date()
     start_of_week = today - timedelta(days=today.weekday())
     end_of_week = start_of_week + timedelta(days=6)
-    existing_workouts = workout_repo.get_by_date_range(getattr(current_user, "id"), start_of_week, end_of_week)
+    existing_workouts = workout_repo.get_by_date_range(
+        getattr(current_user, "id"), start_of_week, end_of_week
+    )
 
     if existing_workouts and not regenerate:
         # Return existing workouts
         return ScheduleResponse(
             workouts=cast(List[WorkoutResponse], existing_workouts),
-            message="Returning existing workout schedule"
+            message="Returning existing workout schedule",
         )
 
     # If regenerate flag is set, delete existing workouts
     if existing_workouts and regenerate:
         for workout in existing_workouts:
             workout_repo.delete(workout)
-    gemini_service = GeminiService(db,profile, preferences)
+    gemini_service = GeminiService(db, profile, preferences)
     workouts_data: List[Dict[str, Any]] = []
     try:
         schedule_response = await gemini_service.get_workout_and_playlist_schedule()
@@ -507,7 +570,7 @@ async def generate_workout_schedule(
             fitness_goal=profile.fitness_goal.value,
             fitness_level=profile.fitness_level.value,
             available_equipment=cast(List[str], preferences.available_equipment),
-            workout_duration_minutes=cast(int, profile.workout_duration_minutes)
+            workout_duration_minutes=cast(int, profile.workout_duration_minutes),
         )
 
     # Create workouts in the database
@@ -516,15 +579,17 @@ async def generate_workout_schedule(
         exercises = workout_data.pop("workout_exercises", [])
 
         # Create workout
-        workout = workout_repo.create({
-            "user_id": current_user.id,
-            "date": get_date_in_current_week(workout_data.get("date", "monday")),
-            "duration_minutes": workout_data.get("duration_minutes"),
-            "focus": workout_data.get("focus", "General"),
-            "playlist_id": workout_data.get("playlist", {}).get("playlist_id"),
-            "playlist_name": workout_data.get("playlist", {}).get("playlist_name"),
-            "playlist_url": workout_data.get("playlist", {}).get("playlist_url"),
-        })
+        workout = workout_repo.create(
+            {
+                "user_id": current_user.id,
+                "date": get_date_in_current_week(workout_data.get("date", "monday")),
+                "duration_minutes": workout_data.get("duration_minutes"),
+                "focus": workout_data.get("focus", "General"),
+                "playlist_id": workout_data.get("playlist", {}).get("playlist_id"),
+                "playlist_name": workout_data.get("playlist", {}).get("playlist_name"),
+                "playlist_url": workout_data.get("playlist", {}).get("playlist_url"),
+            }
+        )
 
         # Add exercises to workout
         for i, exercise_data in enumerate(exercises):
@@ -540,41 +605,62 @@ async def generate_workout_schedule(
             exercise_obj = exercise_repo.get_by_name_exact(name_clean)
 
             if not exercise_obj:
-                results = exercise_repo.search_by_name(name_clean, limit=1)
-                exercise_obj = results[0] if results else None
-                if not exercise_obj:
-                    exercise_obj = exercise_repo.create({
-                        "name": name,
-                        "target": exercise_data.get("target") or "General",
-                        "body_part": exercise_data.get("body_part") or exercise_data.get("bodyPart") or "General",
-                        "secondary_muscles": exercise_data.get("secondary_muscles") if isinstance(exercise_data.get("secondary_muscles"), list) else None,
-                        "equipment": exercise_data.get("machine") or exercise_data.get("equipment") or None,
-                        "gif_url": exercise_data.get("gif_url") or exercise_data.get("gifUrl") or None,
-                        "instructions": exercise_data.get("instructions") if isinstance(exercise_data.get("instructions"), list) else None,
-                    })
-
-            workout_exercise_repo.create_with_composite_key(
-                workout_id=cast(int, workout.id),
-                exercise_id=cast(int, exercise_obj.id),
-                order=i + 1,
-                sets=exercise_data.get("sets"),
-                reps=exercise_data.get("reps"),
-                rest_seconds=exercise_data.get("rest_seconds")
-            )
+                # Try fuzzy lookup first
+                best = get_top_candidate_by_repo(name_clean, exercise_repo, score_cutoff=80.0)
+                if best:
+                    exercise_obj = exercise_repo.get_by_id(best.id)
+                else:
+                    results = exercise_repo.search_by_name(name_clean, limit=1)
+                    exercise_obj = results[0] if results else None
+                    if not exercise_obj:
+                        exercise_obj = exercise_repo.create(
+                            {
+                                "name": name,
+                                "target": exercise_data.get("target") or "General",
+                                "body_part": exercise_data.get("body_part")
+                                or exercise_data.get("bodyPart")
+                                or "General",
+                                "secondary_muscles": exercise_data.get("secondary_muscles")
+                                if isinstance(exercise_data.get("secondary_muscles"), list)
+                                else None,
+                                "equipment": exercise_data.get("machine")
+                                or exercise_data.get("equipment")
+                                or None,
+                                "gif_url": exercise_data.get("gif_url")
+                                or exercise_data.get("gifUrl")
+                                or None,
+                                "instructions": exercise_data.get("instructions")
+                                if isinstance(exercise_data.get("instructions"), list)
+                                else None,
+                            }
+                        )
+                        
+            if exercise_obj:
+                workout_exercise_repo.create_with_composite_key(
+                    workout_id=cast(int, workout.id),
+                    exercise_id=cast(int, exercise_obj.id),
+                    order=i + 1,
+                    sets=exercise_data.get("sets"),
+                    reps=exercise_data.get("reps"),
+                    rest_seconds=exercise_data.get("rest_seconds"),
+                )
 
         created_workouts.append(workout)
-        
+
     return ScheduleResponse(
         workouts=cast(List[WorkoutResponse], created_workouts),
-        message="Generated new workout schedule"
+        message="Generated new workout schedule",
     )
 
-@router.post("/{workout_id}/exercises/{exercise_id}/swap", response_model=WorkoutExerciseResponse)
+
+@router.post(
+    "/{workout_id}/exercises/{exercise_id}/swap", response_model=WorkoutExerciseResponse
+)
 async def swap_workout_exercise(
     workout_id: int,
     exercise_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Swap an exercise in a workout with a similar one.
@@ -584,97 +670,119 @@ async def swap_workout_exercise(
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
     exercise_repo = ExerciseRepository(db)
-    
+
     # Check if workout exists and belongs to user
-    workout = workout_repo.get_by_id_with_exercises(workout_id, getattr(current_user, "id"))
+    workout = workout_repo.get_by_id_with_exercises(
+        workout_id, getattr(current_user, "id")
+    )
 
     if not workout:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=WORKOUT_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=WORKOUT_NOT_FOUND
         )
 
     # Get the exercise
-    workout_exercise = workout_exercise_repo.get_by_composite_key(workout_id, exercise_id)
+    workout_exercise = workout_exercise_repo.get_by_composite_key(
+        workout_id, exercise_id
+    )
 
     if not workout_exercise:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=EXERCISE_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=EXERCISE_NOT_FOUND
         )
 
     # Get user profile and preferences
     profile = profile_repo.get_by_user_id(getattr(current_user, "id"))
     if not profile:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PROFILE_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND
         )
 
     preferences = preferences_repo.get_by_profile_id(getattr(profile, "id"))
     if not preferences:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=PREFERENCES_NOT_FOUND
+            status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
         )
 
     # Get all exercises in the workout to avoid duplicates
     workout_exercises = workout_exercise_repo.get_by_workout_id(workout_id)
 
-    recently_used_exercises_name = [ex.exercise.name for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
-    recently_used_exercise_ids = [ex.exercise.id for ex in workout_exercises if cast(int, ex.exercise_id) != exercise_id]
-    
+    recently_used_exercises_name = [
+        ex.exercise.name
+        for ex in workout_exercises
+        if cast(int, ex.exercise_id) != exercise_id
+    ]
+    recently_used_exercise_ids = [
+        ex.exercise.id
+        for ex in workout_exercises
+        if cast(int, ex.exercise_id) != exercise_id
+    ]
+
     # Will use GeminiService to get suggestions to replace the exercise
-    gemini_service = GeminiService(db,profile, preferences)
+    gemini_service = GeminiService(db, profile, preferences)
     try:
         new_exercise_data = await gemini_service.get_exercise_swap(
             current_exercise=workout_exercise.exercise,
             fitness_level=profile.fitness_level.value,
             target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
             available_equipment=cast(List[str], preferences.available_equipment),
-            recently_used_exercise_names=cast(List[str],recently_used_exercises_name)
+            recently_used_exercise_names=cast(List[str], recently_used_exercises_name),
         )
     except Exception as e:
         print(f"Error getting exercise swap from Gemini: {e}")
         new_exercise_data = None
     if new_exercise_data:
         # Update the exercise with the new data from Gemini
-        # Find the exercise in the database by name
-        new_exercise = exercise_repo.get_by_name_exact(new_exercise_data["name"])
-        if not new_exercise:
-            new_exercise = exercise_repo.create({
-                "name": new_exercise_data["name"],
-                "target": new_exercise_data.get("target", "General"),
-                "body_part": new_exercise_data.get("body_part", "General"),
-                "equipment": new_exercise_data.get("equipment"),
-                "instructions": new_exercise_data.get("instructions"),
-            })
+        # Prefer fuzzy-match to existing DB exercises before creating a stub
+        new_name_clean = str(new_exercise_data.get("name", "")).strip()
+        best = get_top_candidate_by_repo(new_name_clean, exercise_repo, score_cutoff=80.0)
+        if best:
+            new_exercise = exercise_repo.get_by_id(best.id)
+        else:
+            new_exercise = exercise_repo.create(
+                {
+                    "name": new_exercise_data["name"],
+                    "target": new_exercise_data.get("target", "General"),
+                    "body_part": new_exercise_data.get("body_part", "General"),
+                    "equipment": new_exercise_data.get("equipment"),
+                    "instructions": new_exercise_data.get("instructions"),
+                }
+            )
             # Update workout exercise to point to the new exercise
-            workout_exercise_repo.update(workout_exercise, {
-                "exercise_id": new_exercise.id,
-                "sets": new_exercise_data["sets"],
-                "reps": new_exercise_data["reps"],
-                "rest_seconds": new_exercise_data["rest_seconds"],
-                "completed_sets": 0,
-                "weights_used": []
-            })
+            workout_exercise_repo.update(
+                workout_exercise,
+                {
+                    "exercise_id": new_exercise.id,
+                    "sets": new_exercise_data["sets"],
+                    "reps": new_exercise_data["reps"],
+                    "rest_seconds": new_exercise_data["rest_seconds"],
+                    "completed_sets": 0,
+                    "weights_used": [],
+                },
+            )
             return workout_exercise
         # Update workout exercise to point to the existing exercise
-        workout_exercise_repo.update(workout_exercise, {
-            "exercise_id": new_exercise.id,
-            "sets": new_exercise_data["sets"],
-            "reps": new_exercise_data["reps"],
-            "rest_seconds": new_exercise_data["rest_seconds"],
-            "completed_sets": 0,
-            "weights_used": []
-        })
+        if new_exercise:
+            workout_exercise_repo.update(
+                workout_exercise,
+                {
+                    "exercise_id": new_exercise.id,
+                    "sets": new_exercise_data["sets"],
+                    "reps": new_exercise_data["reps"],
+                    "rest_seconds": new_exercise_data["rest_seconds"],
+                    "completed_sets": 0,
+                    "weights_used": [],
+                },
+            )
 
         return workout_exercise
     else:
-        print("Gemini service did not return a swap exercise, falling back to ExerciseSelectorService.")
-        
-    # Fallback to ExerciseSelectorService if Gemini is not available
-    # Use the exercise selector service to find a replacement
+        print(
+            "Gemini service did not return a swap exercise, falling back to ExerciseSelectorService."
+        )
+
+        # Fallback to ExerciseSelectorService if Gemini is not available
+        # Use the exercise selector service to find a replacement
         exercise_selector = ExerciseSelectorService(db)
         new_exercise_data = exercise_selector.swap_exercise(
             exercise_id=cast(int, workout_exercise.exercise_id),
@@ -682,22 +790,23 @@ async def swap_workout_exercise(
             equipment=workout_exercise.equipment,
             fitness_level=profile.fitness_level.value,
             available_equipment=cast(List[str], preferences.available_equipment),
-            recently_used_exercises=cast(List[int],recently_used_exercise_ids)
+            recently_used_exercises=cast(List[int], recently_used_exercise_ids),
         )
 
         # Update the exercise with the new data
-        workout_exercise_repo.update(workout_exercise, {
-            "exercise_id": new_exercise_data["exercise_id"],
-            "name": new_exercise_data["name"],
-            "description": new_exercise_data["description"],
-            "muscle_group": new_exercise_data["muscle_group"],
-            "equipment": new_exercise_data["equipment"],
-            "sets": new_exercise_data["sets"],
-            "reps": new_exercise_data["reps"],
-            "rest_seconds": new_exercise_data["rest_seconds"],
-            "completed_sets": 0,
-            "weights_used": []
-        })
+        workout_exercise_repo.update(
+            workout_exercise,
+            {
+                "exercise_id": new_exercise_data["exercise_id"],
+                "name": new_exercise_data["name"],
+                "description": new_exercise_data["description"],
+                "muscle_group": new_exercise_data["muscle_group"],
+                "equipment": new_exercise_data["equipment"],
+                "sets": new_exercise_data["sets"],
+                "reps": new_exercise_data["reps"],
+                "rest_seconds": new_exercise_data["rest_seconds"],
+                "completed_sets": 0,
+                "weights_used": [],
+            },
+        )
         return workout_exercise
-
-

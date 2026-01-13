@@ -112,3 +112,11 @@ class ExerciseRepository(BaseRepository[Exercise]):
         """
         self.db.query(Exercise).delete()
         self.db.commit()
+
+    def get_all_names(self) -> List[tuple[int, str]]:
+        """
+        Return a list of (id, name) tuples for all exercises. Lightweight helper
+        intended for building fuzzy-match candidate lists without loading full rows.
+        """
+        rows = self.db.query(Exercise.id, Exercise.name).all()
+        return [(r[0], r[1]) for r in rows]
