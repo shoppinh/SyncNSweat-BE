@@ -23,13 +23,19 @@ class GeminiService:
         self.profile = profile
         self.preferences = preferences
 
-    async def get_workout_recommendations(self) -> Dict[str, Any]:
+    async def get_workout_recommendations(
+        self,
+        seed_exercises: Optional[List[Exercise]] = None,
+        strict_mode: bool = False,
+    ) -> Dict[str, Any]:
         """
         Generate personalized workout recommendations using the Gemini AI model asynchronously.
         """
         # Determine number of exercises without evaluating SQLAlchemy ColumnElement truthiness
         #
         num_exercises = self._get_num_exercises_based_on_fitness_level()
+        seed_and_strict_text = self._build_seed_and_strict(seed_exercises, strict_mode)
+                
 
         prompt = f"""
         As a fitness expert, create a personalized workout plan for:
@@ -41,6 +47,7 @@ class GeminiService:
          + Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
          + Exercise types: {getattr(self.preferences, "exercise_types", ["strength", "cardio"])}
          + Number of exercises: {num_exercises}
+         {seed_and_strict_text}
 
 
         Format the response as a valid JSON object with the following keys:
@@ -92,12 +99,19 @@ class GeminiService:
         else:
             return 4
 
-    async def get_workout_schedule_recommendations(self) -> List[Dict[str, Any]]:
+    async def get_workout_schedule_recommendations(
+        self,
+        seed_exercises: Optional[List[str]] = None,
+        strict_mode: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
         Generate personalized workout schedule recommendations using the Gemini AI model asynchronously.
         """
 
         num_exercises = self._get_num_exercises_based_on_fitness_level()
+
+        seed_and_strict_text = self._build_seed_and_strict(seed_exercises, strict_mode)
+
         prompt = f"""
         As a fitness expert, create a personalized weekly workout schedule for:
         - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
@@ -109,7 +123,7 @@ class GeminiService:
          + Available equipment: {getattr(self.preferences, "available_equipment", ["dumbbells", "resistance bands"])}
          + Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
          + Exercise types: {getattr(self.preferences, "exercise_types", ["strength", "cardio"])}
-
+        {seed_and_strict_text}
         Format the response as a valid JSON array where each element is an object with the following keys:
         - "workout_exercises": a list of exercise objects, each with "name","sets","reps","rest_seconds", "body_part", "target", "secondary_muscles", "equipment", "instructions". The "instructions" should be a list of step-by-step strings. The "secondary_muscles" should be a list of strings. The "equipment" should specify the required equipments in concatenated string format.
         - "duration_minutes": an integer for the recommended workout duration in minutes.
@@ -528,7 +542,11 @@ class GeminiService:
         }
         return out
 
-    async def get_workout_and_playlist(self) -> Dict[str, Any]:
+    async def get_workout_and_playlist(
+        self,
+        seed_exercises: Optional[List[Exercise]] = None,
+        strict_mode: bool = False,
+    ) -> Dict[str, Any]:
         """
         Convenience method that returns both an AI workout plan and a Spotify playlist
         recommendation/create result. Returns a dict with keys "workout_plan" and
@@ -536,7 +554,7 @@ class GeminiService:
         value as a message.
         """
         # Use class helpers to call LLM and normalize results
-        raw_plan = await self.get_workout_recommendations()
+        raw_plan = await self.get_workout_recommendations(seed_exercises=seed_exercises, strict_mode=strict_mode)
         workout_plan = self._normalize_workout(raw_plan, self.profile)
 
         # Get or create Spotify playlist based on profile/preferences, with retry.
@@ -555,7 +573,11 @@ class GeminiService:
 
         return {"workout_plan": workout_plan, "playlist": playlist_result}
 
-    async def get_workout_and_playlist_schedule(self) -> Dict[str, Any]:
+    async def get_workout_and_playlist_schedule(
+        self,
+        seed_exercises: Optional[List[str]] = None,
+        strict_mode: bool = False,
+    ) -> Dict[str, Any]:
         """
         Convenience method that returns both an AI workout plan and a Spotify playlist
         recommendation/create result for scheduled workouts. Return a list of dicts with keys "workout_plan" and
@@ -563,7 +585,7 @@ class GeminiService:
         value as a message.
         """
         # Use class helpers to call LLM and normalize results
-        raw_plans = await self.get_workout_schedule_recommendations()
+        raw_plans = await self.get_workout_schedule_recommendations(seed_exercises=seed_exercises, strict_mode=strict_mode)
         workout_plans: List[Dict[str, Any]] = []
         for raw_plan in raw_plans:
             workout_plan = self._normalize_workout(raw_plan, self.profile)
@@ -622,3 +644,16 @@ class GeminiService:
             return normalized_exercise
         except (json.JSONDecodeError, AttributeError):
             return None
+
+    def _build_seed_and_strict(self,seed_exercises: Optional[List[Exercise]], strict_mode: bool) -> str:
+        seed_text = ""
+        strict_text = ""
+        if seed_exercises:
+            seed_text = f"\n- Seed exercises (prefer these in order): {', '.join([getattr(exercise, 'name', '') for exercise in seed_exercises])}\n"
+        if strict_mode:
+            strict_text = (
+                "\nWhen strict_mode is true, DO NOT invent new exercise names. "
+                "Return only exercises from the seed list or canonical, widely-known names. "
+                "Return exact JSON array where each element has 'workout_exercises','duration_minutes','focus','date'.\n"
+            )
+        return seed_text + strict_text

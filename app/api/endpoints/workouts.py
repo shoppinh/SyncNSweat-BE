@@ -25,6 +25,7 @@ from app.schemas.workout import (
     WorkoutResponse,
     WorkoutUpdate,
 )
+from app.services.exercise import ExerciseService
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.playlist_selector import PlaylistSelectorService
@@ -62,7 +63,7 @@ def read_workouts(
         )
     else:
         workouts = workout_repo.get_all_with_exercises(
-            cast(int, current_user.id), skip, limit
+            user_id=cast(int, current_user.id), skip=skip, limit=limit
         )
 
     return workouts
@@ -107,6 +108,7 @@ async def suggest_today_workout(
     preferences_repo = PreferencesRepository(db)
     workout_repo = WorkoutRepository(db)
     exercise_repo = ExerciseRepository(db)
+    exercise_service = ExerciseService(db)
 
     # Load profile and preferences
     profile = profile_repo.get_by_user_id(cast(int, current_user.id))
@@ -120,12 +122,14 @@ async def suggest_today_workout(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
         )
-
+        
+    # Base on the workout history, get the seed exercises to inform AI
+    seed_exercises = exercise_service.get_seed_exercises(current_user)
     # Instantiate GeminiService directly so we can pass db/current_user
     gemini_service = GeminiService(db, profile, preferences)
 
     try:
-        ai_plan = await gemini_service.get_workout_and_playlist()
+        ai_plan = await gemini_service.get_workout_and_playlist(seed_exercises,True)
     except Exception as e:
         print(f"Error generating AI recommendations: {e}")
         raise HTTPException(
