@@ -25,7 +25,7 @@ class GeminiService:
 
     async def get_workout_recommendations(
         self,
-        seed_exercises: Optional[List[Exercise]] = None,
+        seed_exercises: Optional[List[str]] = None,
         strict_mode: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -544,7 +544,7 @@ class GeminiService:
 
     async def get_workout_and_playlist(
         self,
-        seed_exercises: Optional[List[Exercise]] = None,
+        seed_exercises: Optional[List[str]] = None,
         strict_mode: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -645,11 +645,11 @@ class GeminiService:
         except (json.JSONDecodeError, AttributeError):
             return None
 
-    def _build_seed_and_strict(self,seed_exercises: Optional[List[Exercise]], strict_mode: bool) -> str:
+    def _build_seed_and_strict(self,seed_exercises: Optional[List[str]], strict_mode: bool) -> str:
         seed_text = ""
         strict_text = ""
         if seed_exercises:
-            seed_text = f"\n- Seed exercises (prefer these in order): {', '.join([getattr(exercise, 'name', '') for exercise in seed_exercises])}\n"
+            seed_text = f"\n- Seed exercises (prefer these in order): {', '.join(seed_exercises)}\n"
         if strict_mode:
             strict_text = (
                 "\nWhen strict_mode is true, DO NOT invent new exercise names. "

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, logger, status
@@ -6,14 +6,22 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import (
+    create_access_token,
+    get_password_hash,
+    verify_password,
+    generate_refresh_token_raw,
+    hash_refresh_token,
+)
 from app.db.session import get_db
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.user import UserRepository
+from app.repositories.refresh_token import RefreshTokenRepository
 from app.schemas.token import Token
 from app.schemas.user import UserCreate, UserResponse
 from app.services.spotify import SpotifyService
+from app.models.user import User
 
 router = APIRouter()
 
@@ -75,7 +83,17 @@ def login(
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    # Create refresh token and persist hashed value
+    raw_refresh = generate_refresh_token_raw()
+    hashed = hash_refresh_token(raw_refresh)
+    refresh_repo = RefreshTokenRepository(db)
+    refresh_expires = None
+    if getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", None):
+        refresh_expires = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_repo.create_token(user_id=getattr(user, "id"), token_hash=hashed, expires_at=refresh_expires)
+
+    return {"access_token": access_token, "token_type": "bearer", "refresh_token": raw_refresh}
 
 
 @router.post("/token", response_model=Token)
@@ -86,6 +104,49 @@ def login_for_access_token(
     OAuth2 compatible token login, get an access token for future requests.
     """
     return login(form_data, db)
+
+from pydantic import BaseModel
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/token/refresh", response_model=Token)
+def refresh_access_token(request: RefreshRequest, db: Session = Depends(get_db)):
+    """Validate a refresh token, rotate it, and return a new access token (and refresh token)."""
+    refresh_repo = RefreshTokenRepository(db)
+    hashed = hash_refresh_token(request.refresh_token)
+    token_row = refresh_repo.get_by_hash(hashed)
+    if not token_row or getattr(token_row, "revoked", False):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    # Use timezone-aware UTC now and ensure any DB-stored naive datetimes
+    # are treated as UTC for comparison.
+    now = datetime.now(timezone.utc)
+    expires_at = cast(datetime,token_row.expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < now:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
+
+    # Rotate: create new token and revoke old
+    raw_new = generate_refresh_token_raw()
+    new_hashed = hash_refresh_token(raw_new)
+    refresh_repo.create_token(
+        user_id= getattr(token_row, "user_id"), token_hash=new_hashed, rotated_from_id=getattr(token_row, "id")
+    )
+    refresh_repo.revoke(token_row)
+
+    # Issue new access token
+    # Load user
+
+    user = db.query(User).filter(User.id == token_row.user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
+    return {"access_token": access_token, "token_type": "bearer", "refresh_token": raw_new}
 
 
 @router.get("/spotify/login")
@@ -294,3 +355,14 @@ async def spotify_callback(
             "spotify_connected": True,
         },
     }
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(request: RefreshRequest, db: Session = Depends(get_db)):
+    """Revoke a refresh token (logout)."""
+    refresh_repo = RefreshTokenRepository(db)
+    hashed = hash_refresh_token(request.refresh_token)
+    token_row = refresh_repo.get_by_hash(hashed)
+    if token_row:
+        refresh_repo.revoke(token_row)
+    return None

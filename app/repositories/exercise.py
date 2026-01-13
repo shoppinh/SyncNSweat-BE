@@ -6,7 +6,7 @@ from typing import Any, List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.workout import Exercise
+from app.models.workout import Exercise, Workout, WorkoutExercise
 from app.repositories.base import BaseRepository
 
 
@@ -120,3 +120,97 @@ class ExerciseRepository(BaseRepository[Exercise]):
         """
         rows = self.db.query(Exercise.id, Exercise.name).all()
         return [(r[0], r[1]) for r in rows]
+
+    def get_seed_exercises_for_user(
+        self,
+        user_id: int,
+        personal_limit: int = 30,
+        global_limit: int = 30,
+        top_k: int = 20,
+        available_equipment: Optional[List[str]] = None,
+        target_muscle_groups: Optional[List[str]] = None,
+    ) -> List[str]:
+        """
+        Build a weighted seed list of exercise names for the given user.
+
+        Strategy:
+        - Query the user's recent/frequent exercises (by count, then recency).
+        - Query globally popular exercises as fallback.
+        - Merge, de-duplicate, and apply simple weighting by repeating top personal items.
+
+        Returns a list of exercise names (strings). Names may be repeated to indicate higher weight.
+        """
+        # Build base personal query: count usages per exercise for this user
+        personal_q = (
+            self.db.query(Exercise.id, Exercise.name)
+            .join(WorkoutExercise, WorkoutExercise.exercise_id == Exercise.id)
+            .join(Workout, Workout.id == WorkoutExercise.workout_id)
+            .filter(Workout.user_id == user_id)
+            .group_by(Exercise.id, Exercise.name)
+            .order_by(func.count().desc())
+            .limit(personal_limit)
+        )
+
+        # Apply optional filters (equipment/target) to narrow candidates
+        if available_equipment:
+            eqs = [e.lower() for e in available_equipment if e]
+            personal_q = personal_q.filter(
+                (Exercise.equipment == None) | (func.lower(Exercise.equipment).in_(eqs))
+            )
+        if target_muscle_groups:
+            targets = [t.lower() for t in target_muscle_groups if t]
+            personal_q = personal_q.filter(func.lower(Exercise.target).in_(targets))
+
+        personal_rows = personal_q.all()
+        personal_names = [r[1] for r in personal_rows]
+
+        # Global popular exercises
+        global_q = (
+            self.db.query(Exercise.id, Exercise.name, func.count().label("usage_count"))
+            .join(WorkoutExercise, WorkoutExercise.exercise_id == Exercise.id)
+            .join(Workout, Workout.id == WorkoutExercise.workout_id)
+            .group_by(Exercise.id, Exercise.name)
+            .order_by(func.count().desc())
+            .limit(global_limit)
+        )
+        if available_equipment:
+            eqs = [e.lower() for e in available_equipment if e]
+            global_q = global_q.filter(
+                (Exercise.equipment == None) | (func.lower(Exercise.equipment).in_(eqs))
+            )
+        if target_muscle_groups:
+            targets = [t.lower() for t in target_muscle_groups if t]
+            global_q = global_q.filter(func.lower(Exercise.target).in_(targets))
+
+        global_rows = global_q.all()
+        global_names = [r[1] for r in global_rows if r[1] not in personal_names]
+
+        # Merge with weighting: repeat top personal items more times to bias the seed
+        weighted: List[str] = []
+        for i, name in enumerate(personal_names):
+            if i < 5:
+                repeats = 3
+            elif i < 15:
+                repeats = 2
+            else:
+                repeats = 1
+            weighted.extend([name] * repeats)
+
+        # Add some global names with lower weight
+        for i, name in enumerate(global_names):
+            if len(weighted) >= top_k * 3:
+                break
+            weighted.append(name)
+
+        # Produce final seed list trimmed to top_k (preserving weight ordering)
+        final: List[str] = []
+        for name in weighted:
+            if len(final) >= top_k:
+                break
+            final.append(name)
+
+        # If still empty, fallback to a simple top global list
+        if not final and global_names:
+            final = global_names[: min(top_k, len(global_names))]
+
+        return final

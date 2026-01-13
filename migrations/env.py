@@ -11,7 +11,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import settings
 from app.db.session import Base
-import app.models
+import importlib
+import pkgutil
+import app.models as models_package
+
+# Ensure all model modules are imported so that Base.metadata is populated
+for _, modname, _ in pkgutil.iter_modules(models_package.__path__):
+    importlib.import_module(f"{models_package.__name__}.{modname}")
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -63,7 +69,7 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    configuration = config.get_section(config.config_ini_section)
+    configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = settings.DATABASE_URI
     connectable = engine_from_config(
         configuration,

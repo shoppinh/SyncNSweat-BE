@@ -25,7 +25,6 @@ from app.schemas.workout import (
     WorkoutResponse,
     WorkoutUpdate,
 )
-from app.services.exercise import ExerciseService
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.playlist_selector import PlaylistSelectorService
@@ -108,7 +107,7 @@ async def suggest_today_workout(
     preferences_repo = PreferencesRepository(db)
     workout_repo = WorkoutRepository(db)
     exercise_repo = ExerciseRepository(db)
-    exercise_service = ExerciseService(db)
+    # exercise_service = ExerciseService(db)
 
     # Load profile and preferences
     profile = profile_repo.get_by_user_id(cast(int, current_user.id))
@@ -124,7 +123,7 @@ async def suggest_today_workout(
         )
         
     # Base on the workout history, get the seed exercises to inform AI
-    seed_exercises = exercise_service.get_seed_exercises(current_user)
+    seed_exercises = exercise_repo.get_seed_exercises_for_user(current_user)
     # Instantiate GeminiService directly so we can pass db/current_user
     gemini_service = GeminiService(db, profile, preferences)
 

@@ -9,6 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
+import secrets
+import hmac
+import hashlib
+from datetime import timezone
 
 # Use Argon2 as the primary hashing algorithm and keep bcrypt for
 # verification of existing hashes. New passwords will be hashed with
@@ -121,3 +125,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         )
 
     return user
+
+
+def generate_refresh_token_raw(nbytes: int = 32) -> str:
+    """Generate a URL-safe random refresh token string."""
+    return secrets.token_urlsafe(nbytes)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Hash refresh token using HMAC-SHA256 with SECRET_KEY.
+
+    Returns hex digest string suitable for storage and lookup.
+    """
+    key = settings.SECRET_KEY.encode()
+    return hmac.new(key, token.encode(), hashlib.sha256).hexdigest()

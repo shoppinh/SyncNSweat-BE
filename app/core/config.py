@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # that require longer-lived tokens should set ACCESS_TOKEN_EXPIRE_MINUTES in
     # the environment to override this default.
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
+    REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
     # Spotify API settings
     SPOTIFY_CLIENT_ID: Optional[str] = os.getenv("SPOTIFY_CLIENT_ID")
