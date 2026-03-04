@@ -74,7 +74,7 @@ def login(
         form_data.password, cast(str, user.hashed_password)
     ):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -119,7 +119,7 @@ def refresh_access_token(request: RefreshRequest, db: Session = Depends(get_db))
     hashed = hash_refresh_token(request.refresh_token)
     token_row = refresh_repo.get_by_hash(hashed)
     if not token_row or getattr(token_row, "revoked", False):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid refresh token")
     # Use timezone-aware UTC now and ensure any DB-stored naive datetimes
     # are treated as UTC for comparison.
     now = datetime.now(timezone.utc)
@@ -127,7 +127,7 @@ def refresh_access_token(request: RefreshRequest, db: Session = Depends(get_db))
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at and expires_at < now:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refresh token expired")
 
     # Rotate: create new token and revoke old
     raw_new = generate_refresh_token_raw()
