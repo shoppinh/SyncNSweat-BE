@@ -12,6 +12,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.observability.metrics import incr, timed
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.workout_request import WorkoutRequestRepository
@@ -53,6 +54,7 @@ def _resolve_playlist(
 
 def process_event(payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(payload)
+    incr("playlist_worker_received_count")
 
     request_id = int(envelope.payload["request_id"])
     profile_id = int(envelope.payload["profile_id"])
@@ -66,7 +68,8 @@ def process_event(payload: Dict[str, Any]) -> None:
         if request is None:
             return
 
-        playlist = _resolve_playlist(db, profile_id=profile_id)
+        with timed("playlist_generation_latency"):
+            playlist = _resolve_playlist(db, profile_id=profile_id)
         next_event = create_event_envelope(
             event_type=EventType.PLAYLIST_READY,
             source="worker.playlist",
@@ -87,6 +90,7 @@ def process_event(payload: Dict[str, Any]) -> None:
                 exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
                 payload=next_event.model_dump(mode="json"),
             )
+        incr("playlist_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
@@ -97,6 +101,7 @@ def process_event(payload: Dict[str, Any]) -> None:
                     error_code="PLAYLIST_GENERATION_FAILED",
                     error_message=str(exc),
                 )
+        incr("playlist_worker_failure_count")
     finally:
         db.close()
 

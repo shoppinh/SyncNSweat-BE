@@ -12,6 +12,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType
+from app.observability.metrics import incr, timed
 from app.repositories.workout_request import WorkoutRequestRepository
 
 QUEUE_NAME: Final[str] = "notification"
@@ -25,26 +26,29 @@ def _safe_json(value: Any) -> Dict[str, Any]:
 
 def process_event(payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(payload)
+    incr("notification_worker_received_count")
     request_id = int(envelope.payload.get("request_id"))
 
     db: Session = SessionLocal()
     repo = WorkoutRequestRepository(db)
 
     try:
-        with db.begin():
-            request = repo.get_by_id(request_id)
-            if request is None:
-                return
+        with timed("notification_latency"):
+            with db.begin():
+                request = repo.get_by_id(request_id)
+                if request is None:
+                    return
 
-            if envelope.event_type == EventType.WORKOUT_PLAN_COMPLETED:
-                repo.set_status(request, status="COMPLETED")
-            elif envelope.event_type == EventType.WORKOUT_PLAN_FAILED:
-                repo.set_status(
-                    request,
-                    status="FAILED",
-                    error_code="PIPELINE_FAILED",
-                    error_message=_safe_json(envelope.payload).get("error_message"),
-                )
+                if envelope.event_type == EventType.WORKOUT_PLAN_COMPLETED:
+                    repo.set_status(request, status="COMPLETED")
+                elif envelope.event_type == EventType.WORKOUT_PLAN_FAILED:
+                    repo.set_status(
+                        request,
+                        status="FAILED",
+                        error_code="PIPELINE_FAILED",
+                        error_message=_safe_json(envelope.payload).get("error_message"),
+                    )
+        incr("notification_worker_success_count")
     finally:
         db.close()
 

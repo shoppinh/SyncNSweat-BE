@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.publisher import EventPublisher
+from app.observability.metrics import incr, timed
 from app.repositories.outbox_event import OutboxEventRepository
 
 DEFAULT_BATCH_SIZE: Final[int] = 100
@@ -29,15 +30,21 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     try:
         await manager.connect()
         pending_events = repo.get_pending(limit=batch_size)
+        incr("outbox_pending_batch_size", len(pending_events))
 
         for event in pending_events:
             try:
-                await publisher.publish_event(
-                    getattr(event, "routing_key", ""), getattr(event, "payload", {})
-                )
+                with timed(
+                    "outbox_publish_latency",
+                    tags={"routing_key": getattr(event, "routing_key", "")},
+                ):
+                    await publisher.publish_event(
+                        getattr(event, "routing_key", ""), getattr(event, "payload", {})
+                    )
                 repo.mark_published(event)
                 db.commit()
                 processed += 1
+                incr("outbox_publish_success_count")
             except Exception as exc:  # noqa: BLE001
                 repo.mark_failed(
                     event,
@@ -45,6 +52,7 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
                     retry_after_seconds=DEFAULT_RETRY_SECONDS,
                 )
                 db.commit()
+                incr("outbox_publish_failure_count")
     finally:
         db.close()
         await manager.close()

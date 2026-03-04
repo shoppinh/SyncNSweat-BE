@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, Final, Optional, cast
 
 from aio_pika import IncomingMessage
+from aio_pika.abc import AbstractIncomingMessage
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -12,6 +13,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.observability.metrics import incr, timed
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.workout import WorkoutRepository
@@ -28,7 +30,9 @@ def _safe_json(obj: Any) -> Dict[str, Any]:
     return {}
 
 
-def _build_context_payload(db: Session, request_id: int, user_id: int, profile_id: int) -> Dict[str, Any]:
+def _build_context_payload(
+    db: Session, request_id: int, user_id: int, profile_id: int
+) -> Dict[str, Any]:
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
     workout_repo = WorkoutRepository(db)
@@ -42,9 +46,15 @@ def _build_context_payload(db: Session, request_id: int, user_id: int, profile_i
         "user_id": user_id,
         "profile_id": profile_id,
         "profile": {
-            "fitness_goal": getattr(getattr(profile, "fitness_goal", None), "value", None),
-            "fitness_level": getattr(getattr(profile, "fitness_level", None), "value", None),
-            "workout_duration_minutes": getattr(profile, "workout_duration_minutes", None),
+            "fitness_goal": getattr(
+                getattr(profile, "fitness_goal", None), "value", None
+            ),
+            "fitness_level": getattr(
+                getattr(profile, "fitness_level", None), "value", None
+            ),
+            "workout_duration_minutes": getattr(
+                profile, "workout_duration_minutes", None
+            ),
             "available_days": getattr(profile, "available_days", None),
         },
         "preferences": {
@@ -57,7 +67,9 @@ def _build_context_payload(db: Session, request_id: int, user_id: int, profile_i
             {
                 "id": cast(int, workout.id),
                 "focus": getattr(workout, "focus", None),
-                "date": workout.date.isoformat() if getattr(workout, "date", None) else None,
+                "date": workout.date.isoformat()
+                if getattr(workout, "date", None)
+                else None,
             }
             for workout in recent_workouts
         ],
@@ -66,6 +78,7 @@ def _build_context_payload(db: Session, request_id: int, user_id: int, profile_i
 
 def process_event(message_payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(message_payload)
+    incr("context_worker_received_count")
 
     request_id = int(envelope.payload["request_id"])
     user_id = int(envelope.payload["user_id"])
@@ -76,33 +89,35 @@ def process_event(message_payload: Dict[str, Any]) -> None:
     outbox_service = OutboxService(db)
 
     try:
-        with db.begin():
-            request = request_repo.get_by_id(request_id)
-            if request is None:
-                raise ValueError(f"workout request not found: {request_id}")
+        with timed("context_build_latency"):
+            with db.begin():
+                request = request_repo.get_by_id(request_id)
+                if request is None:
+                    raise ValueError(f"workout request not found: {request_id}")
 
-            context_payload = _build_context_payload(
-                db=db,
-                request_id=request_id,
-                user_id=user_id,
-                profile_id=profile_id,
-            )
+                context_payload = _build_context_payload(
+                    db=db,
+                    request_id=request_id,
+                    user_id=user_id,
+                    profile_id=profile_id,
+                )
 
-            next_event = create_event_envelope(
-                event_type=EventType.CONTEXT_PREPARED,
-                source="worker.context",
-                payload=context_payload,
-                saga_id=envelope.saga_id,
-                correlation_id=envelope.correlation_id,
-            )
+                next_event = create_event_envelope(
+                    event_type=EventType.CONTEXT_PREPARED,
+                    source="worker.context",
+                    payload=context_payload,
+                    saga_id=envelope.saga_id,
+                    correlation_id=envelope.correlation_id,
+                )
 
-            request_repo.set_status(request, status="CONTEXT_READY")
-            outbox_service.enqueue_event(
-                event_id=next_event.event_id,
-                routing_key="workout.context.ready",
-                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                payload=next_event.model_dump(mode="json"),
-            )
+                request_repo.set_status(request, status="CONTEXT_READY")
+                outbox_service.enqueue_event(
+                    event_id=next_event.event_id,
+                    routing_key="workout.context.ready",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=next_event.model_dump(mode="json"),
+                )
+        incr("context_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
@@ -113,11 +128,12 @@ def process_event(message_payload: Dict[str, Any]) -> None:
                     error_code="CONTEXT_BUILD_FAILED",
                     error_message=str(exc),
                 )
+        incr("context_worker_failure_count")
     finally:
         db.close()
 
 
-async def _handle_message(message: IncomingMessage) -> None:
+async def _handle_message(message: AbstractIncomingMessage) -> None:
     async with message.process(requeue=False):
         raw = json.loads(message.body.decode("utf-8"))
         process_event(_safe_json(raw))

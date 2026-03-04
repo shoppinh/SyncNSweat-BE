@@ -12,6 +12,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.observability.metrics import incr, timed
 from app.models.preferences import Preferences
 from app.models.profile import Profile
 from app.repositories.preferences import PreferencesRepository
@@ -62,6 +63,7 @@ async def _generate_draft(
 
 async def process_event(message_payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(message_payload)
+    incr("ai_worker_received_count")
 
     request_id = int(envelope.payload["request_id"])
     user_id = int(envelope.payload["user_id"])
@@ -89,12 +91,13 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
                     )
             return
 
-        draft_payload = await _generate_draft(
-            db,
-            profile=profile,
-            preferences=preferences,
-            context_payload=envelope.payload,
-        )
+        with timed("ai_generation_latency"):
+            draft_payload = await _generate_draft(
+                db,
+                profile=profile,
+                preferences=preferences,
+                context_payload=envelope.payload,
+            )
 
         next_event = create_event_envelope(
             event_type=EventType.WORKOUT_DRAFT_GENERATED,
@@ -117,6 +120,7 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
                 exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
                 payload=next_event.model_dump(mode="json"),
             )
+        incr("ai_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
@@ -127,6 +131,7 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
                     error_code="AI_GENERATION_FAILED",
                     error_message=str(exc),
                 )
+        incr("ai_worker_failure_count")
     finally:
         db.close()
 

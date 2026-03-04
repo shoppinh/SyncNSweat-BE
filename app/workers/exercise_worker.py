@@ -12,6 +12,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.observability.metrics import incr, timed
 from app.models.preferences import Preferences
 from app.models.profile import Profile
 from app.repositories.preferences import PreferencesRepository
@@ -54,6 +55,7 @@ def _resolve_exercises(
 
 def process_event(payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(payload)
+    incr("exercise_worker_received_count")
 
     request_id = int(envelope.payload["request_id"])
     profile_id = int(envelope.payload["profile_id"])
@@ -81,12 +83,13 @@ def process_event(payload: Dict[str, Any]) -> None:
                     )
             return
 
-        exercises = _resolve_exercises(
-            db,
-            draft=draft,
-            profile=profile,
-            preferences=preferences,
-        )
+        with timed("exercise_mapping_latency"):
+            exercises = _resolve_exercises(
+                db,
+                draft=draft,
+                profile=profile,
+                preferences=preferences,
+            )
 
         next_event = create_event_envelope(
             event_type=EventType.WORKOUT_EXERCISES_READY,
@@ -108,6 +111,7 @@ def process_event(payload: Dict[str, Any]) -> None:
                 exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
                 payload=next_event.model_dump(mode="json"),
             )
+        incr("exercise_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
@@ -118,6 +122,7 @@ def process_event(payload: Dict[str, Any]) -> None:
                     error_code="EXERCISE_MAPPING_FAILED",
                     error_message=str(exc),
                 )
+        incr("exercise_worker_failure_count")
     finally:
         db.close()
 

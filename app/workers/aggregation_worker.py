@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
 from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.observability.metrics import incr, timed
 from app.repositories.exercise import ExerciseRepository
 from app.repositories.outbox_event import OutboxEventRepository
 from app.repositories.profile import ProfileRepository
@@ -113,6 +114,7 @@ def _persist_finalized_workout(
 
 def process_event(payload: Dict[str, Any], *, is_exercise_event: bool) -> None:
     envelope = EventEnvelope.model_validate(payload)
+    incr("aggregation_worker_received_count")
 
     request_id = int(envelope.payload["request_id"])
     profile_id = int(envelope.payload["profile_id"])
@@ -123,57 +125,59 @@ def process_event(payload: Dict[str, Any], *, is_exercise_event: bool) -> None:
     outbox_service = OutboxService(db)
 
     try:
-        with db.begin():
-            state = state_repo.get_or_create(saga_id=envelope.saga_id, request_id=request_id)
-            if is_exercise_event:
-                state.exercises_ready = True
-                state.exercises_event_id = envelope.event_id
-            else:
-                state.playlist_ready = True
-                state.playlist_event_id = envelope.event_id
+        with timed("aggregation_latency"):
+            with db.begin():
+                state = state_repo.get_or_create(saga_id=envelope.saga_id, request_id=request_id)
+                if is_exercise_event:
+                    state.exercises_ready = True
+                    state.exercises_event_id = envelope.event_id
+                else:
+                    state.playlist_ready = True
+                    state.playlist_event_id = envelope.event_id
 
-            db.add(state)
+                db.add(state)
 
-            if state.exercises_ready and state.playlist_ready:
-                exercises_payload = _extract_latest_payload(
-                    outbox_repo,
-                    envelope.saga_id,
-                    EventType.WORKOUT_EXERCISES_READY,
-                )
-                playlist_payload = _extract_latest_payload(
-                    outbox_repo,
-                    envelope.saga_id,
-                    EventType.PLAYLIST_READY,
-                )
+                if state.exercises_ready and state.playlist_ready:
+                    exercises_payload = _extract_latest_payload(
+                        outbox_repo,
+                        envelope.saga_id,
+                        EventType.WORKOUT_EXERCISES_READY,
+                    )
+                    playlist_payload = _extract_latest_payload(
+                        outbox_repo,
+                        envelope.saga_id,
+                        EventType.PLAYLIST_READY,
+                    )
 
-                workout_id = _persist_finalized_workout(
-                    db,
-                    request_id=request_id,
-                    profile_id=profile_id,
-                    exercises_payload=exercises_payload,
-                    playlist_payload=playlist_payload,
-                )
+                    workout_id = _persist_finalized_workout(
+                        db,
+                        request_id=request_id,
+                        profile_id=profile_id,
+                        exercises_payload=exercises_payload,
+                        playlist_payload=playlist_payload,
+                    )
 
-                completed = create_event_envelope(
-                    event_type=EventType.WORKOUT_PLAN_COMPLETED,
-                    source="worker.aggregation",
-                    payload={
-                        "request_id": request_id,
-                        "profile_id": profile_id,
-                        "workout_id": workout_id,
-                    },
-                    saga_id=envelope.saga_id,
-                    correlation_id=envelope.correlation_id,
-                )
-                outbox_service.enqueue_event(
-                    event_id=completed.event_id,
-                    routing_key="workout.completed",
-                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                    payload=completed.model_dump(mode="json"),
-                )
+                    completed = create_event_envelope(
+                        event_type=EventType.WORKOUT_PLAN_COMPLETED,
+                        source="worker.aggregation",
+                        payload={
+                            "request_id": request_id,
+                            "profile_id": profile_id,
+                            "workout_id": workout_id,
+                        },
+                        saga_id=envelope.saga_id,
+                        correlation_id=envelope.correlation_id,
+                    )
+                    outbox_service.enqueue_event(
+                        event_id=completed.event_id,
+                        routing_key="workout.completed",
+                        exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                        payload=completed.model_dump(mode="json"),
+                    )
+        incr("aggregation_worker_success_count")
     except Exception:
         # Keep aggregation worker resilient. Notification phase handles terminal failure events.
-        pass
+        incr("aggregation_worker_failure_count")
     finally:
         db.close()
 
