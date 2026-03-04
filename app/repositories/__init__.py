@@ -10,6 +10,7 @@ from app.repositories.workout_exercise import WorkoutExerciseRepository
 from app.repositories.exercise import ExerciseRepository
 from app.repositories.outbox_event import OutboxEventRepository
 from app.repositories.workout_request import WorkoutRequestRepository
+from app.repositories.workflow_state import WorkflowStateRepository
 
 __all__ = [
     "BaseRepository",
@@ -21,4 +22,5 @@ __all__ = [
     "ExerciseRepository",
     "OutboxEventRepository",
     "WorkoutRequestRepository",
+    "WorkflowStateRepository",
 ]

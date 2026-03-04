@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import and_, asc, or_
+from sqlalchemy import and_, asc, desc, or_
 from sqlalchemy.orm import Session
 
 from app.models.outbox_event import OutboxEvent
@@ -76,3 +76,17 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
         )
         event.last_error = error_message[:4000]
         self.db.add(event)
+
+    def get_latest_by_saga_and_event_type(
+        self,
+        *,
+        saga_id: str,
+        event_type: str,
+    ) -> OutboxEvent | None:
+        return (
+            self.db.query(OutboxEvent)
+            .filter(OutboxEvent.payload["saga_id"].astext == saga_id)
+            .filter(OutboxEvent.payload["event_type"].astext == event_type)
+            .order_by(desc(OutboxEvent.created_at))
+            .first()
+        )
