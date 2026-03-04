@@ -1,13 +1,19 @@
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.db.session import get_db
+from app.messaging.events import EventType, create_event_envelope, generate_saga_id
 from app.models.user import User
 from app.models.workout import Workout, WorkoutExercise
+from app.models.workout_request import WorkoutRequest
 from app.repositories.exercise import ExerciseRepository
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
@@ -27,6 +33,7 @@ from app.schemas.workout import (
 )
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
+from app.services.outbox import OutboxService
 from app.services.playlist_selector import PlaylistSelectorService
 from app.services.scheduler import SchedulerService
 from app.utils.datetime import get_date_in_current_week
@@ -42,72 +49,28 @@ NO_WORKOUT_TODAY = "No workout scheduled for today"
 router = APIRouter()
 
 
-@router.get("/", response_model=List[WorkoutResponse])
-def read_workouts(
-    skip: int = 0,
-    limit: int = 100,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Get all workouts for the current user.
-    """
-    workout_repo = WorkoutRepository(db)
-
-    if start_date and end_date:
-        workouts = workout_repo.get_by_date_range(
-            cast(int, current_user.id), start_date.date(), end_date.date()
-        )
-    else:
-        workouts = workout_repo.get_all_with_exercises(
-            user_id=cast(int, current_user.id), skip=skip, limit=limit
-        )
-
-    return workouts
-
-
-@router.get("/today", response_model=WorkoutResponse)
-def get_today_workout(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
-    """
-    Get today's workout.
-    """
-    workout_repo = WorkoutRepository(db)
-    today = datetime.now().date()
-
-    # Get workout for today
-    workout = workout_repo.get_by_date(getattr(current_user, "id"), today)
-
-    if not workout:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=NO_WORKOUT_TODAY
-        )
-    return workout
+class AsyncWorkoutResponse(BaseModel):
+    status: str
+    request_id: int
+    saga_id: str
 
 
 @router.post(
-    "/today", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED
+    "/today",
+    response_model=WorkoutResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        202: {"model": AsyncWorkoutResponse},
+    },
 )
 async def suggest_today_workout(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    """
-    Create a workout with spotify playlist for the current user using AI recommendations and persist it.
+    use_async = settings.USE_ASYNC_WORKOUT_PIPELINE
 
-    This endpoint will call the Gemini AI to generate a workout plan, then save a
-    `Workout` and associated `WorkoutExercise` rows. If an exercise name returned
-    by the AI doesn't exist in the `exercises` table, a minimal `Exercise` row
-    will be created.
-    """
     # Initialize repositories
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
-    workout_repo = WorkoutRepository(db)
-    exercise_repo = ExerciseRepository(db)
-    # exercise_service = ExerciseService(db)
 
     # Load profile and preferences
     profile = profile_repo.get_by_user_id(cast(int, current_user.id))
@@ -121,14 +84,65 @@ async def suggest_today_workout(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
         )
-        
+
+    if use_async:
+        saga_id = generate_saga_id()
+        saga_uuid = uuid.UUID(saga_id)
+        outbox_service = OutboxService(db)
+
+        try:
+            with db.begin():
+                workout_request = WorkoutRequest(
+                    user_id=cast(int, current_user.id),
+                    profile_id=cast(int, profile.id),
+                    saga_id=saga_uuid,
+                    status="PENDING",
+                )
+                db.add(workout_request)
+                db.flush()
+
+                event = create_event_envelope(
+                    event_type=EventType.WORKOUT_PLAN_REQUESTED,
+                    source="api.workouts",
+                    payload={
+                        "request_id": cast(int, workout_request.id),
+                        "user_id": cast(int, current_user.id),
+                        "profile_id": cast(int, profile.id),
+                    },
+                    saga_id=saga_id,
+                    correlation_id=saga_id,
+                )
+
+                outbox_service.enqueue_event(
+                    event_id=event.event_id,
+                    routing_key="workout.requested",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=event.model_dump(mode="json"),
+                )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to enqueue async workout request: {exc}",
+            ) from exc
+
+        response = AsyncWorkoutResponse(
+            status="processing",
+            request_id=cast(int, workout_request.id),
+            saga_id=saga_id,
+        )
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response.model_dump())
+
+    # -------- Existing Synchronous Logic --------
+    workout_repo = WorkoutRepository(db)
+    exercise_repo = ExerciseRepository(db)
+
     # Base on the workout history, get the seed exercises to inform AI
     seed_exercises = exercise_repo.get_seed_exercises_for_user(current_user)
     # Instantiate GeminiService directly so we can pass db/current_user
     gemini_service = GeminiService(db, profile, preferences)
 
     try:
-        ai_plan = await gemini_service.get_workout_and_playlist(seed_exercises,True)
+        ai_plan = await gemini_service.get_workout_and_playlist(seed_exercises, True)
     except Exception as e:
         print(f"Error generating AI recommendations: {e}")
         raise HTTPException(
@@ -609,7 +623,9 @@ async def generate_workout_schedule(
 
             if not exercise_obj:
                 # Try fuzzy lookup first
-                best = get_top_candidate_by_repo(name_clean, exercise_repo, score_cutoff=80.0)
+                best = get_top_candidate_by_repo(
+                    name_clean, exercise_repo, score_cutoff=80.0
+                )
                 if best:
                     exercise_obj = exercise_repo.get_by_id(best.id)
                 else:
@@ -623,8 +639,12 @@ async def generate_workout_schedule(
                                 "body_part": exercise_data.get("body_part")
                                 or exercise_data.get("bodyPart")
                                 or "General",
-                                "secondary_muscles": exercise_data.get("secondary_muscles")
-                                if isinstance(exercise_data.get("secondary_muscles"), list)
+                                "secondary_muscles": exercise_data.get(
+                                    "secondary_muscles"
+                                )
+                                if isinstance(
+                                    exercise_data.get("secondary_muscles"), list
+                                )
                                 else None,
                                 "equipment": exercise_data.get("machine")
                                 or exercise_data.get("equipment")
@@ -637,7 +657,7 @@ async def generate_workout_schedule(
                                 else None,
                             }
                         )
-                        
+
             if exercise_obj:
                 workout_exercise_repo.create_with_composite_key(
                     workout_id=cast(int, workout.id),
@@ -738,7 +758,9 @@ async def swap_workout_exercise(
         # Update the exercise with the new data from Gemini
         # Prefer fuzzy-match to existing DB exercises before creating a stub
         new_name_clean = str(new_exercise_data.get("name", "")).strip()
-        best = get_top_candidate_by_repo(new_name_clean, exercise_repo, score_cutoff=80.0)
+        best = get_top_candidate_by_repo(
+            new_name_clean, exercise_repo, score_cutoff=80.0
+        )
         if best:
             new_exercise = exercise_repo.get_by_id(best.id)
         else:

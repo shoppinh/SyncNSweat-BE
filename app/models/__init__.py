@@ -4,6 +4,7 @@ from app.models.preferences import Preferences
 from app.models.workout import Workout, WorkoutExercise, Exercise
 from app.models.refresh_token import RefreshToken
 from app.models.outbox_event import OutboxEvent
+from app.models.workout_request import WorkoutRequest, WorkflowState
 
 # For Alembic to detect models
 __all__ = [
@@ -17,4 +18,6 @@ __all__ = [
     "Exercise",
     "RefreshToken",
     "OutboxEvent",
+    "WorkoutRequest",
+    "WorkflowState",
 ]

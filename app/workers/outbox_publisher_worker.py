@@ -32,7 +32,9 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
 
         for event in pending_events:
             try:
-                await publisher.publish_event(event.routing_key, event.payload)
+                await publisher.publish_event(
+                    getattr(event, "routing_key", ""), getattr(event, "payload", {})
+                )
                 repo.mark_published(event)
                 db.commit()
                 processed += 1

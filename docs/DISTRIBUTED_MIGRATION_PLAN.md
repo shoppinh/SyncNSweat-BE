@@ -17,7 +17,7 @@ The migration is implemented in 11 phases. Each phase must be independently test
 1. Messaging Infrastructure
 2. Outbox Pattern Foundation
 3. Event Contract Definition
-4. Async API Entry for `POST /workouts/today`
+4. Async API Entry for `POST /api/v1/workouts/today`
 5. Context Builder Worker
 6. AI Generation Worker
 7. Parallel Exercise + Playlist Workers
@@ -69,7 +69,7 @@ Required fields:
 
 | Event Type | Routing Key | Emitted By |
 |------------|-------------|------------|
-| `WorkoutPlanRequested` | `workout.requested` | API endpoint |
+| `WorkoutPlanRequested` | `workout.requested` | Outbox publisher worker (origin: API endpoint) |
 | `ContextPrepared` | `workout.context.ready` | Context worker |
 | `WorkoutDraftGenerated` | `workout.draft.generated` | AI worker |
 | `WorkoutExercisesReady` | `workout.exercises.ready` | Exercise worker |
@@ -108,6 +108,25 @@ Suggested columns:
 - `exercises_event_id` (nullable)
 - `playlist_event_id` (nullable)
 - `completed_at` (nullable)
+- `updated_at`
+
+### `outbox_events`
+
+Tracks pending integration events that must be published to RabbitMQ.
+
+Suggested columns:
+
+- `id` (PK)
+- `event_id` (unique)
+- `routing_key`
+- `exchange_name`
+- `payload` (JSON/JSONB)
+- `status` (`PENDING`, `FAILED`, `PUBLISHED`)
+- `attempt_count`
+- `next_retry_at` (nullable)
+- `published_at` (nullable)
+- `last_error` (nullable)
+- `created_at`
 - `updated_at`
 
 ## Feature Flag
@@ -167,6 +186,7 @@ Tasks:
 - Define event envelope model in `app/messaging/events.py`.
 - Add helper utilities for `event_id`, `saga_id`, timestamps.
 - Document versioning rule (`version` field required).
+- Confirm outbox payload serialization uses this exact envelope.
 
 Acceptance:
 
@@ -180,8 +200,11 @@ Goal: API no longer executes AI generation inline when feature flag is enabled.
 Tasks:
 
 - Keep existing validation logic (auth, profile, preferences checks).
-- Create `workout_requests` record with `PENDING`.
-- Generate `saga_id` and publish `WorkoutPlanRequested`.
+- Generate `saga_id`.
+- In a single DB transaction:
+  - Create `workout_requests` record with `PENDING`.
+  - Create outbox row in `outbox_events` containing `WorkoutPlanRequested`.
+- Do not publish to RabbitMQ directly from API endpoint.
 - Return immediate response:
 
 ```json
@@ -195,6 +218,8 @@ Tasks:
 Acceptance:
 
 - Endpoint returns quickly without calling Gemini in-request.
+- `workout_requests` and `outbox_events` are committed atomically.
+- Async path returns HTTP `202` with `status`, `request_id`, and `saga_id`.
 - Existing synchronous flow still works when flag is disabled.
 
 ### Phase 5 - Implement Context Builder Worker
