@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     USE_ASYNC_WORKOUT_PIPELINE: bool = os.getenv(
         "USE_ASYNC_WORKOUT_PIPELINE", "false"
     ).lower() in ("1", "true", "yes", "on")
+    ASYNC_PIPELINE_STRICT_MODE: bool = os.getenv(
+        "ASYNC_PIPELINE_STRICT_MODE", "false"
+    ).lower() in ("1", "true", "yes", "on")
+    ASYNC_PIPELINE_ROLLOUT_PERCENT: int = int(
+        os.getenv("ASYNC_PIPELINE_ROLLOUT_PERCENT", 100)
+    )
 
     # Spotify API settings
     SPOTIFY_CLIENT_ID: Optional[str] = os.getenv("SPOTIFY_CLIENT_ID")

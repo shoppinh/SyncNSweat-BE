@@ -55,6 +55,19 @@ class AsyncWorkoutResponse(BaseModel):
     saga_id: str
 
 
+def _should_use_async_for_user(user_id: int) -> bool:
+    if not settings.USE_ASYNC_WORKOUT_PIPELINE:
+        return False
+
+    rollout = max(0, min(settings.ASYNC_PIPELINE_ROLLOUT_PERCENT, 100))
+    if rollout >= 100:
+        return True
+    if rollout <= 0:
+        return False
+
+    return (user_id % 100) < rollout
+
+
 @router.post(
     "/today",
     response_model=WorkoutResponse,
@@ -66,7 +79,7 @@ class AsyncWorkoutResponse(BaseModel):
 async def suggest_today_workout(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    use_async = settings.USE_ASYNC_WORKOUT_PIPELINE
+    use_async = _should_use_async_for_user(cast(int, current_user.id))
 
     # Initialize repositories
     profile_repo = ProfileRepository(db)
@@ -120,17 +133,24 @@ async def suggest_today_workout(
                     payload=event.model_dump(mode="json"),
                 )
         except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to enqueue async workout request: {exc}",
-            ) from exc
+            if settings.ASYNC_PIPELINE_STRICT_MODE:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to enqueue async workout request: {exc}",
+                ) from exc
+            # Fail-open mode: fallback to existing synchronous flow.
+            use_async = False
 
-        response = AsyncWorkoutResponse(
-            status="processing",
-            request_id=cast(int, workout_request.id),
-            saga_id=saga_id,
-        )
-        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response.model_dump())
+        if use_async:
+            response = AsyncWorkoutResponse(
+                status="processing",
+                request_id=cast(int, workout_request.id),
+                saga_id=saga_id,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=response.model_dump(),
+            )
 
     # -------- Existing Synchronous Logic --------
     workout_repo = WorkoutRepository(db)
