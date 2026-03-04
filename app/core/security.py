@@ -116,7 +116,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
     user = db.query(User).filter(User.email == email).first()
     if user is None:
-        raise credentials_exception
+        user_not_found_exception = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+        raise user_not_found_exception
 
     if not cast(bool,user.is_active):
         raise HTTPException(

@@ -16,3 +16,4 @@ requests==2.32.3
 
 # Gemini API dependencies
 google-genai
+aio-pika==9.5.5
