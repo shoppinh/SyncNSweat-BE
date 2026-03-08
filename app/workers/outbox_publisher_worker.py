@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Final
 
 from sqlalchemy.orm import Session
@@ -15,6 +16,8 @@ from app.repositories.outbox_event import OutboxEventRepository
 DEFAULT_BATCH_SIZE: Final[int] = 100
 DEFAULT_RETRY_SECONDS: Final[int] = 30
 
+
+logger = logging.getLogger(__name__)
 
 async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     manager = RabbitMQConnectionManager(
@@ -62,6 +65,7 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
 
 async def run_forever(poll_interval_seconds: int = 2) -> None:
     while True:
+        logger.info("Polling outbox for pending events...")
         await publish_outbox_once()
         await asyncio.sleep(poll_interval_seconds)
 

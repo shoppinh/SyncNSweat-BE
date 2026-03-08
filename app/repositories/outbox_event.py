@@ -35,7 +35,10 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
 
     def get_pending(self, limit: int = 100) -> List[OutboxEvent]:
         now = datetime.now(timezone.utc)
-        return (
+        # Claim pending events using row-level locking to avoid multiple
+        # workers processing the same event concurrently. We mark claimed
+        # rows as IN_PROGRESS and commit so other workers skip them.
+        query = (
             self.db.query(OutboxEvent)
             .filter(OutboxEvent.published_at.is_(None))
             .filter(
@@ -52,8 +55,32 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
             )
             .order_by(asc(OutboxEvent.created_at))
             .limit(limit)
-            .all()
         )
+
+        # Use FOR UPDATE SKIP LOCKED when supported by the DB (e.g. Postgres)
+        try:
+            pending = query.with_for_update(skip_locked=True).all()
+        except Exception:
+            # Fallback: if the DB does not support SKIP LOCKED, fall back to
+            # a plain select. This may allow duplicate processing in some
+            # deployments; prefer a DB that supports row locking.
+            pending = query.all()
+
+        # Mark claimed events as IN_PROGRESS so other workers won't pick them
+        # up on subsequent polls. Commit here to persist the claim.
+        for event in pending:
+            event.status = "IN_PROGRESS"
+            self.db.add(event)
+
+        if pending:
+            try:
+                self.db.commit()
+            except Exception:
+                # If we fail to commit the claim, rollback so events remain
+                # available for other workers.
+                self.db.rollback()
+
+        return pending
 
     def mark_published(self, event: OutboxEvent) -> None:
         event.status = "PUBLISHED"

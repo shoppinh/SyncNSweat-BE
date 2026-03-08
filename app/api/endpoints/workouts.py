@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, cast
+from typing import Annotated, Any, Dict, List, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.messaging.events import EventType, create_event_envelope, generate_saga_id
+from app.messaging.events import (EventType, create_event_envelope,
+                                  generate_saga_id)
 from app.models.user import User
 from app.models.workout import Workout, WorkoutExercise
 from app.models.workout_request import WorkoutRequest
@@ -19,18 +20,11 @@ from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.workout import WorkoutRepository
 from app.repositories.workout_exercise import WorkoutExerciseRepository
-from app.schemas.exercise import (
-    WorkoutExerciseCreate,
-    WorkoutExerciseResponse,
-    WorkoutExerciseUpdate,
-)
-from app.schemas.workout import (
-    ScheduleRequest,
-    ScheduleResponse,
-    WorkoutCreate,
-    WorkoutResponse,
-    WorkoutUpdate,
-)
+from app.schemas.exercise import (WorkoutExerciseCreate,
+                                  WorkoutExerciseResponse,
+                                  WorkoutExerciseUpdate)
+from app.schemas.workout import (ScheduleRequest, ScheduleResponse,
+                                 WorkoutCreate, WorkoutResponse, WorkoutUpdate)
 from app.services.exercise_selector import ExerciseSelectorService
 from app.services.gemini import GeminiService
 from app.services.outbox import OutboxService
@@ -77,22 +71,22 @@ def _should_use_async_for_user(user_id: int) -> bool:
     },
 )
 async def suggest_today_workout(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+    current_user: Annotated[User, Depends(get_current_user)], db: Annotated[Session, Depends(get_db)]
 ):
-    use_async = _should_use_async_for_user(cast(int, current_user.id))
+    use_async = _should_use_async_for_user(current_user.id)
 
     # Initialize repositories
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
 
     # Load profile and preferences
-    profile = profile_repo.get_by_user_id(cast(int, current_user.id))
+    profile = profile_repo.get_by_user_id(current_user.id)
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=PROFILE_NOT_FOUND
         )
 
-    preferences = preferences_repo.get_by_profile_id(cast(int, profile.id))
+    preferences = preferences_repo.get_by_profile_id(profile.id)
     if not preferences:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=PREFERENCES_NOT_FOUND
@@ -104,35 +98,36 @@ async def suggest_today_workout(
         outbox_service = OutboxService(db)
 
         try:
-            with db.begin():
-                workout_request = WorkoutRequest(
-                    user_id=cast(int, current_user.id),
-                    profile_id=cast(int, profile.id),
-                    saga_id=saga_uuid,
-                    status="PENDING",
-                )
-                db.add(workout_request)
-                db.flush()
+            workout_request = WorkoutRequest(
+                user_id=current_user.id,
+                profile_id=profile.id,
+                saga_id=saga_uuid,
+                status="PENDING",
+            )
+            db.add(workout_request)
+            db.flush()
 
-                event = create_event_envelope(
-                    event_type=EventType.WORKOUT_PLAN_REQUESTED,
-                    source="api.workouts",
-                    payload={
-                        "request_id": cast(int, workout_request.id),
-                        "user_id": cast(int, current_user.id),
-                        "profile_id": cast(int, profile.id),
-                    },
-                    saga_id=saga_id,
-                    correlation_id=saga_id,
-                )
+            event = create_event_envelope(
+                event_type=EventType.WORKOUT_PLAN_REQUESTED,
+                source="api.workouts",
+                payload={
+                    "request_id": workout_request.id,
+                    "user_id": current_user.id,
+                    "profile_id": profile.id,
+                },
+                saga_id=saga_id,
+                correlation_id=saga_id,
+            )
 
-                outbox_service.enqueue_event(
-                    event_id=event.event_id,
-                    routing_key="workout.requested",
-                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                    payload=event.model_dump(mode="json"),
-                )
+            outbox_service.enqueue_event(
+                event_id=event.event_id,
+                routing_key="workout.requested",
+                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                payload=event.model_dump(mode="json"),
+            )
+            db.commit()
         except Exception as exc:
+            db.rollback()
             if settings.ASYNC_PIPELINE_STRICT_MODE:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -144,7 +139,7 @@ async def suggest_today_workout(
         if use_async:
             response = AsyncWorkoutResponse(
                 status="processing",
-                request_id=cast(int, workout_request.id),
+                request_id=workout_request.id,
                 saga_id=saga_id,
             )
             return JSONResponse(
@@ -157,7 +152,7 @@ async def suggest_today_workout(
     exercise_repo = ExerciseRepository(db)
 
     # Base on the workout history, get the seed exercises to inform AI
-    seed_exercises = exercise_repo.get_seed_exercises_for_user(current_user)
+    seed_exercises = exercise_repo.get_seed_exercises_for_user(current_user.id)
     # Instantiate GeminiService directly so we can pass db/current_user
     gemini_service = GeminiService(db, profile, preferences)
 
@@ -180,7 +175,7 @@ async def suggest_today_workout(
         playlist_selector = PlaylistSelectorService(db, profile, preferences)
         playlist_data = playlist_selector.shuffle_top_and_recent_tracks(
             fitness_goal=profile.fitness_goal.value,
-            duration_minutes=cast(int, profile.workout_duration_minutes),
+            duration_minutes=profile.workout_duration_minutes,
         )
         playlist_id = playlist_data.get("playlist_id")
         playlist_name = playlist_data.get("playlist_name")
@@ -197,9 +192,9 @@ async def suggest_today_workout(
         selected_exercises = exercise_selector.select_exercises_for_workout(
             fitness_goal=profile.fitness_goal.value,
             fitness_level=profile.fitness_level.value,
-            available_equipment=cast(List[str], preferences.available_equipment),
-            target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
-            workout_duration_minutes=cast(int, profile.workout_duration_minutes),
+            available_equipment=preferences.available_equipment,
+            target_muscle_groups=preferences.target_muscle_groups,
+            workout_duration_minutes=profile.workout_duration_minutes,
             recently_used_exercises=[],
         )
         workout_exercises = selected_exercises
@@ -273,8 +268,8 @@ async def suggest_today_workout(
 
         workout_ex_repo = WorkoutExerciseRepository(db)
         workout_ex_to_create = workout_ex_repo.create_with_composite_key(
-            workout_id=cast(int, db_workout.id),
-            exercise_id=cast(int, exercise_obj.id),
+            workout_id=db_workout.id,
+            exercise_id=exercise_obj.id,
             sets=int(sets) if sets is not None else None,
             reps=str(reps) if reps is not None else None,
             order=idx + 1,
@@ -306,8 +301,8 @@ def create_workout(
             exercise_data = exercise_in.model_dump()
 
             workout_exercise_repo.create_with_composite_key(
-                workout_id=cast(int, db_workout.id),
-                exercise_id=cast(int, exercise_data["exercise_id"]),
+                workout_id=db_workout.id,
+                exercise_id=exercise_data["exercise_id"],
                 order=i + 1,
                 sets=exercise_data.get("sets"),
                 reps=exercise_data.get("reps"),
@@ -602,12 +597,12 @@ async def generate_workout_schedule(
         # Generate new workout schedule
         scheduler_service = SchedulerService(db)
         workouts_data = scheduler_service.generate_weekly_schedule(
-            user_id=cast(int, current_user.id),
-            available_days=cast(List[str], profile.available_days),
+            user_id=current_user.id,
+            available_days=profile.available_days,
             fitness_goal=profile.fitness_goal.value,
             fitness_level=profile.fitness_level.value,
-            available_equipment=cast(List[str], preferences.available_equipment),
-            workout_duration_minutes=cast(int, profile.workout_duration_minutes),
+            available_equipment=preferences.available_equipment,
+            workout_duration_minutes=profile.workout_duration_minutes,
         )
 
     # Create workouts in the database
@@ -680,8 +675,8 @@ async def generate_workout_schedule(
 
             if exercise_obj:
                 workout_exercise_repo.create_with_composite_key(
-                    workout_id=cast(int, workout.id),
-                    exercise_id=cast(int, exercise_obj.id),
+                    workout_id=workout.id,
+                    exercise_id=exercise_obj.id,
                     order=i + 1,
                     sets=exercise_data.get("sets"),
                     reps=exercise_data.get("reps"),
@@ -753,12 +748,12 @@ async def swap_workout_exercise(
     recently_used_exercises_name = [
         ex.exercise.name
         for ex in workout_exercises
-        if cast(int, ex.exercise_id) != exercise_id
+        if ex.exercise_id != exercise_id
     ]
     recently_used_exercise_ids = [
         ex.exercise.id
         for ex in workout_exercises
-        if cast(int, ex.exercise_id) != exercise_id
+        if ex.exercise_id != exercise_id
     ]
 
     # Will use GeminiService to get suggestions to replace the exercise
@@ -767,9 +762,9 @@ async def swap_workout_exercise(
         new_exercise_data = await gemini_service.get_exercise_swap(
             current_exercise=workout_exercise.exercise,
             fitness_level=profile.fitness_level.value,
-            target_muscle_groups=cast(List[str], preferences.target_muscle_groups),
-            available_equipment=cast(List[str], preferences.available_equipment),
-            recently_used_exercise_names=cast(List[str], recently_used_exercises_name),
+            target_muscle_groups=preferences.target_muscle_groups,
+            available_equipment=preferences.available_equipment,
+            recently_used_exercise_names=recently_used_exercises_name,
         )
     except Exception as e:
         print(f"Error getting exercise swap from Gemini: {e}")
@@ -830,12 +825,12 @@ async def swap_workout_exercise(
         # Use the exercise selector service to find a replacement
         exercise_selector = ExerciseSelectorService(db)
         new_exercise_data = exercise_selector.swap_exercise(
-            exercise_id=cast(int, workout_exercise.exercise_id),
+            exercise_id=workout_exercise.exercise_id,
             muscle_group=workout_exercise.muscle_group,
             equipment=workout_exercise.equipment,
             fitness_level=profile.fitness_level.value,
-            available_equipment=cast(List[str], preferences.available_equipment),
-            recently_used_exercises=cast(List[int], recently_used_exercise_ids),
+            available_equipment=preferences.available_equipment,
+            recently_used_exercises=recently_used_exercise_ids,
         )
 
         # Update the exercise with the new data
