@@ -98,36 +98,35 @@ async def suggest_today_workout(
         outbox_service = OutboxService(db)
 
         try:
-            workout_request = WorkoutRequest(
-                user_id=current_user.id,
-                profile_id=profile.id,
-                saga_id=saga_uuid,
-                status="PENDING",
-            )
-            db.add(workout_request)
-            db.flush()
+            with db.begin_nested():  # savepoint — rolls back only this block on failure
+                workout_request = WorkoutRequest(
+                    user_id=current_user.id,
+                    profile_id=profile.id,
+                    saga_id=saga_uuid,
+                    status="PENDING",
+                )
+                db.add(workout_request)
+                db.flush()
 
-            event = create_event_envelope(
-                event_type=EventType.WORKOUT_PLAN_REQUESTED,
-                source="api.workouts",
-                payload={
-                    "request_id": workout_request.id,
-                    "user_id": current_user.id,
-                    "profile_id": profile.id,
-                },
-                saga_id=saga_id,
-                correlation_id=saga_id,
-            )
+                event = create_event_envelope(
+                    event_type=EventType.WORKOUT_PLAN_REQUESTED,
+                    source="api.workouts",
+                    payload={
+                        "request_id": workout_request.id,
+                        "user_id": current_user.id,
+                        "profile_id": profile.id,
+                    },
+                    saga_id=saga_id,
+                    correlation_id=saga_id,
+                )
 
-            outbox_service.enqueue_event(
-                event_id=event.event_id,
-                routing_key="workout.requested",
-                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                payload=event.model_dump(mode="json"),
-            )
-            db.commit()
+                outbox_service.enqueue_event(
+                    event_id=event.event_id,
+                    routing_key="workout.requested",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=event.model_dump(mode="json"),
+                )
         except Exception as exc:
-            db.rollback()
             if settings.ASYNC_PIPELINE_STRICT_MODE:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

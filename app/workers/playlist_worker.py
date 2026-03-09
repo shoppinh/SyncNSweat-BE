@@ -34,6 +34,10 @@ def _resolve_playlist(
     *,
     profile_id: int,
 ) -> Dict[str, Any]:
+    
+    # TODO: The transaction has been closed after the Spotify access token is refreshed. 
+    # Need to refactor the code to keep the transaction open until the playlist is generated, 
+    # or implement a token refresh mechanism that can work outside of a transaction.
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
 
@@ -53,6 +57,7 @@ def _resolve_playlist(
 
 
 def process_event(payload: Dict[str, Any]) -> None:
+    
     envelope = EventEnvelope.model_validate(payload)
     incr("playlist_worker_received_count")
 

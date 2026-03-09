@@ -104,14 +104,14 @@ class ExerciseRepository(BaseRepository[Exercise]):
             exercises: List of exercise dictionaries
         """
         self.db.bulk_insert_mappings(Exercise.__mapper__, exercises)
-        self.db.commit()
+        self.db.flush()
         
     def delete_all(self) -> None:
         """
         Delete all exercises from the database.
         """
         self.db.query(Exercise).delete()
-        self.db.commit()
+        self.db.flush()
 
     def get_all_names(self) -> List[tuple[int, str]]:
         """

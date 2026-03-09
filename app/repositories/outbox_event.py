@@ -84,8 +84,8 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
 
     def mark_published(self, event: OutboxEvent) -> None:
         event.status = "PUBLISHED"
-        event.published_at = datetime.now(timezone.utc)
-        event.next_retry_at = None
+        event.published_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+        event.next_retry_at = None  # type: ignore[assignment]
         event.last_error = None
         self.db.add(event)
 
@@ -100,7 +100,7 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
         event.attempt_count = (event.attempt_count or 0) + 1
         event.next_retry_at = datetime.now(timezone.utc) + timedelta(
             seconds=retry_after_seconds
-        )
+        ) # type: ignore[assignment]
         event.last_error = error_message[:4000]
         self.db.add(event)
 
