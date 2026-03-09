@@ -5,6 +5,7 @@ This is the backend API for Sync & Sweat, built with FastAPI and PostgreSQL, dep
 ## Table of Contents
 
 - [Getting Started (Local Development)](#getting-started-local-development)
+- [Docker Compose (App + PostgreSQL)](#docker-compose-app--postgresql)
 - [Infrastructure Management with Terraform](#infrastructure-management-with-terraform)
 - [API Documentation](#api-documentation)
 - [Running Tests](#running-tests)
@@ -34,11 +35,12 @@ pip install -r requirements.txt
 
 Create a `.env` file with the following variables:
 ```
-DATABASE_URL=postgresql://username:password@localhost:5432/syncnsweat
+DATABASE_URI=postgresql://username:password@localhost:5432/syncnsweat
 SECRET_KEY=your_secret_key
 SPOTIFY_CLIENT_ID=your_spotify_client_id
 SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-EXERCISEDB_API_KEY=your_exercisedb_api_key
+EXERCISE_API_KEY=your_exercisedb_api_key
+EXERCISE_API_HOST=your_exercisedb_host
 ```
 
 4. Run database migrations:
@@ -51,6 +53,46 @@ alembic upgrade head
 
 ```bash
 uvicorn app.main:app --reload
+```
+
+## Docker Compose (App + PostgreSQL)
+
+1. Create a compose env file:
+
+```bash
+cp .env.compose.example .env.compose
+```
+
+2. Update values in `.env.compose` (at minimum `SECRET_KEY` and any external API keys you use).
+
+3. Build and start services:
+
+```bash
+docker compose --env-file .env.compose up --build
+```
+
+4. Verify endpoints:
+
+- API root: http://localhost:8000/
+- Health: http://localhost:8000/api/v1/health/
+- Swagger UI: http://localhost:8000/docs
+
+Notes:
+- The app container runs Alembic migrations (`alembic upgrade head`) on startup.
+- `DATABASE_URI` must point to the compose database host (`db`), not `localhost`.
+- PostgreSQL data is persisted in the named volume `postgres_data`.
+
+Common commands:
+
+```bash
+# Follow logs
+docker compose --env-file .env.compose logs -f app
+
+# Stop and remove containers/network
+docker compose --env-file .env.compose down
+
+# Stop and remove containers + volumes (deletes local DB data)
+docker compose --env-file .env.compose down -v
 ```
 
 ## API Documentation

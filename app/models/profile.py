@@ -1,8 +1,18 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Enum
-from sqlalchemy.orm import relationship
-from sqlalchemy.types import ARRAY
-from app.db.session import Base
+from __future__ import annotations
+
 import enum
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import Enum, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import ARRAY
+
+from app.db.session import Base
+
+if TYPE_CHECKING:
+    from app.models.preferences import Preferences
+    from app.models.user import User
+
 
 class FitnessGoal(enum.Enum):
     STRENGTH = "strength"
@@ -19,14 +29,14 @@ class FitnessLevel(enum.Enum):
 class Profile(Base):
     __tablename__ = "profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
-    name = Column(String, index=True)
-    fitness_goal = Column(Enum(FitnessGoal), default=FitnessGoal.GENERAL_FITNESS)
-    fitness_level = Column(Enum(FitnessLevel), default=FitnessLevel.BEGINNER)
-    available_days = Column(ARRAY(String), default=["Monday", "Wednesday", "Friday"])
-    workout_duration_minutes = Column(Integer, default=60)
-    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    name: Mapped[Optional[str]] = mapped_column(String, index=True)
+    fitness_goal: Mapped[FitnessGoal] = mapped_column(Enum(FitnessGoal), default=FitnessGoal.GENERAL_FITNESS)
+    fitness_level: Mapped[FitnessLevel] = mapped_column(Enum(FitnessLevel), default=FitnessLevel.BEGINNER)
+    available_days: Mapped[List[str]] = mapped_column(ARRAY(String), default=lambda: ["Monday", "Wednesday", "Friday"])
+    workout_duration_minutes: Mapped[int] = mapped_column(Integer, default=60)
+
     # Relationships
-    user = relationship("User", backref="profile")
-    preferences = relationship("Preferences", back_populates="profile", uselist=False, cascade="all, delete-orphan")
+    user: Mapped["User"] = relationship("User", backref="profile")
+    preferences: Mapped[Optional["Preferences"]] = relationship("Preferences", back_populates="profile", uselist=False, cascade="all, delete-orphan")

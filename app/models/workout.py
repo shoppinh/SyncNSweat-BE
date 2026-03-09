@@ -1,62 +1,75 @@
-from sqlalchemy import Column, Index, Integer, PrimaryKeyConstraint, String, ForeignKey, DateTime, ARRAY, Boolean
-from sqlalchemy.orm import relationship
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import (Boolean, DateTime, ForeignKey, Index, Integer,
+                        PrimaryKeyConstraint, String)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
+from sqlalchemy.types import ARRAY
+
 from app.db.session import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
+
 
 class Workout(Base):
     __tablename__ = "workouts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    date = Column(DateTime(timezone=True), index=True)
-    focus = Column(String)  # e.g., "Upper Body", "Lower Body", "Push", "Pull", "Legs"
-    duration_minutes = Column(Integer)
-    playlist_id = Column(String, nullable=True)  # Spotify playlist ID
-    playlist_name = Column(String, nullable=True)
-    playlist_url = Column(String, nullable=True)
-    completed = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    date: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), index=True)
+    focus: Mapped[Optional[str]] = mapped_column(String)
+    duration_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    playlist_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    playlist_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    playlist_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    user = relationship("User", backref="workouts")
-    workout_exercises = relationship("WorkoutExercise", back_populates="workout", cascade="all, delete-orphan")
+    user: Mapped["User"] = relationship("User", backref="workouts")
+    workout_exercises: Mapped[List["WorkoutExercise"]] = relationship("WorkoutExercise", back_populates="workout", cascade="all, delete-orphan")
+
 
 class WorkoutExercise(Base):
     __tablename__ = "workout_exercises"
 
-    workout_id = Column(Integer, ForeignKey("workouts.id", ondelete="CASCADE"))
-    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"))  # ID from external exercise API
-    sets = Column(Integer)
-    reps = Column(String)  # Could be "8-12" or just "10"
-    order = Column(Integer)  # Order in the workout
-    rest_seconds = Column(Integer)
+    workout_id: Mapped[int] = mapped_column(Integer, ForeignKey("workouts.id", ondelete="CASCADE"))
+    exercise_id: Mapped[int] = mapped_column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"))
+    sets: Mapped[Optional[int]] = mapped_column(Integer)
+    reps: Mapped[Optional[str]] = mapped_column(String)
+    order: Mapped[Optional[int]] = mapped_column(Integer)
+    rest_seconds: Mapped[Optional[int]] = mapped_column(Integer)
 
     # For tracking progress
-    completed_sets = Column(Integer, default=0)
-    weights_used = Column(ARRAY(String), default=[])  # e.g., ["20kg", "22.5kg", "25kg"]
+    completed_sets: Mapped[int] = mapped_column(Integer, default=0)
+    weights_used: Mapped[List[str]] = mapped_column(ARRAY(String), default=list)
 
-    # Define composite primary key
+    # Define composite primary key and indexes
     __table_args__ = (
         PrimaryKeyConstraint('workout_id', 'exercise_id'),
-        Index('idx_workout_exercise_order', 'workout_id', 'order', unique=True)  # Ensure order is unique within a workout
+        Index('idx_workout_exercise_order', 'workout_id', 'order', unique=True),
     )
-    
+
     # Relationships
-    workout = relationship("Workout", back_populates="workout_exercises")
-    exercise = relationship("Exercise", back_populates="workout_exercises")
-    
+    workout: Mapped["Workout"] = relationship("Workout", back_populates="workout_exercises")
+    exercise: Mapped["Exercise"] = relationship("Exercise", back_populates="workout_exercises")
+
+
 class Exercise(Base):
     __tablename__ = "exercises"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    body_part = Column(String, nullable=True)
-    target = Column(String)
-    secondary_muscles = Column(ARRAY(String), nullable=True)
-    equipment = Column(String, nullable=True)
-    gif_url = Column(String, nullable=True)
-    instructions = Column(ARRAY(String), nullable=True)
-    
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    body_part: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    target: Mapped[Optional[str]] = mapped_column(String)
+    secondary_muscles: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+    equipment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    gif_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    instructions: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+
     # Relationships
-    workout_exercises = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
+    workout_exercises: Mapped[List["WorkoutExercise"]] = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
 

@@ -33,9 +33,9 @@ COPY --from=builder /install /usr/local
 # Copy application code
 COPY --from=builder /app /app
 
-# Ensure app files owned by non-root user and entrypoint executable
-RUN chown -R app:app /app \
-	&& chmod +x /app/entrypoint.sh || true
+# Install entrypoint outside /app so bind-mounting /app in compose does not override it
+RUN install -m 755 /app/entrypoint.sh /usr/local/bin/entrypoint.sh \
+	&& chown -R app:app /app
 
 USER app
 
@@ -45,4 +45,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Entrypoint should exec to forward signals (ensure entrypoint.sh uses exec "$@")
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

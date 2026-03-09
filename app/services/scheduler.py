@@ -1,7 +1,8 @@
-from typing import List, Dict, Any
 from datetime import datetime, timedelta
-from app.services.exercise import ExerciseService
+from typing import Any, Dict, List
 from sqlalchemy.orm import Session
+from app.services.exercise_selector import ExerciseSelectorService
+
 
 class SchedulerService:
     """
@@ -9,7 +10,7 @@ class SchedulerService:
     """
     
     def __init__(self, db: Session):
-        self.exercise_service = ExerciseService(db)
+        self.exercise_selector = ExerciseSelectorService(db)
     
     def generate_weekly_schedule(
         self,
@@ -77,11 +78,13 @@ class SchedulerService:
             
             # Generate exercises for this workout
             muscle_groups = self._get_muscle_groups_for_focus(focus)
-            exercises = self.exercise_service.generate_workout(
-                muscle_groups=muscle_groups,
-                available_equipment=available_equipment,
+            exercises = self.exercise_selector.select_exercises_for_workout(
+                fitness_goal=fitness_goal,
                 fitness_level=fitness_level,
-                workout_duration_minutes=workout_duration_minutes
+                available_equipment=available_equipment,
+                target_muscle_groups=muscle_groups,
+                workout_duration_minutes= workout_duration_minutes,
+                recently_used_exercises=[],
             )
             
             workout["workout_exercises"] = exercises

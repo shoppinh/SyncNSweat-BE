@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, logger, status
@@ -6,15 +6,22 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import (create_access_token, get_password_hash,
-                               verify_password)
+from app.core.security import (
+    create_access_token,
+    get_password_hash,
+    verify_password,
+    generate_refresh_token_raw,
+    hash_refresh_token,
+)
 from app.db.session import get_db
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.user import UserRepository
+from app.repositories.refresh_token import RefreshTokenRepository
 from app.schemas.token import Token
 from app.schemas.user import UserCreate, UserResponse
 from app.services.spotify import SpotifyService
+from app.models.user import User
 
 router = APIRouter()
 
@@ -30,7 +37,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     user_repo = UserRepository(db)
     profile_repo = ProfileRepository(db)
     preferences_repo = PreferencesRepository(db)
-    
+
     # Check if user with this email already exists
     if user_repo.email_exists(user_in.email):
         raise HTTPException(
@@ -39,18 +46,13 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 
     # Create new user
     hashed_password = get_password_hash(user_in.password)
-    db_user = user_repo.create({
-        "email": user_in.email,
-        "hashed_password": hashed_password,
-        "is_active": True
-    })
+    db_user = user_repo.create(
+        {"email": user_in.email, "hashed_password": hashed_password, "is_active": True}
+    )
 
     # Create profile for user if name is provided
     if user_in.name:
-        profile = profile_repo.create({
-            "user_id": db_user.id,
-            "name": user_in.name
-        })
+        profile = profile_repo.create({"user_id": db_user.id, "name": user_in.name})
 
         # Create empty preferences
         preferences_repo.create({"profile_id": profile.id})
@@ -67,10 +69,12 @@ def login(
     """
     user_repo = UserRepository(db)
     user = user_repo.get_by_email(form_data.username)
-    
-    if not user or not verify_password(form_data.password, cast(str,user.hashed_password)):
+
+    if not user or not verify_password(
+        form_data.password, cast(str, user.hashed_password)
+    ):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -79,7 +83,17 @@ def login(
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    # Create refresh token and persist hashed value
+    raw_refresh = generate_refresh_token_raw()
+    hashed = hash_refresh_token(raw_refresh)
+    refresh_repo = RefreshTokenRepository(db)
+    refresh_expires = None
+    if getattr(settings, "REFRESH_TOKEN_EXPIRE_DAYS", None):
+        refresh_expires = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_repo.create_token(user_id=getattr(user, "id"), token_hash=hashed, expires_at=refresh_expires)
+
+    return {"access_token": access_token, "token_type": "bearer", "refresh_token": raw_refresh}
 
 
 @router.post("/token", response_model=Token)
@@ -91,6 +105,49 @@ def login_for_access_token(
     """
     return login(form_data, db)
 
+from pydantic import BaseModel
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/token/refresh", response_model=Token)
+def refresh_access_token(request: RefreshRequest, db: Session = Depends(get_db)):
+    """Validate a refresh token, rotate it, and return a new access token (and refresh token)."""
+    refresh_repo = RefreshTokenRepository(db)
+    hashed = hash_refresh_token(request.refresh_token)
+    token_row = refresh_repo.get_by_hash(hashed)
+    if not token_row or getattr(token_row, "revoked", False):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid refresh token")
+    # Use timezone-aware UTC now and ensure any DB-stored naive datetimes
+    # are treated as UTC for comparison.
+    now = datetime.now(timezone.utc)
+    expires_at = cast(datetime,token_row.expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and expires_at < now:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refresh token expired")
+
+    # Rotate: create new token and revoke old
+    raw_new = generate_refresh_token_raw()
+    new_hashed = hash_refresh_token(raw_new)
+    refresh_repo.create_token(
+        user_id= getattr(token_row, "user_id"), token_hash=new_hashed, rotated_from_id=getattr(token_row, "id")
+    )
+    refresh_repo.revoke(token_row)
+
+    # Issue new access token
+    # Load user
+
+    user = db.query(User).filter(User.id == token_row.user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
+    return {"access_token": access_token, "token_type": "bearer", "refresh_token": raw_new}
+
 
 @router.get("/spotify/login")
 def spotify_login():
@@ -100,15 +157,19 @@ def spotify_login():
     """
     spotify_service = SpotifyService()
     redirect_uri = f"{settings.SPOTIFY_REDIRECT_URL}/api/v1/auth/spotify/callback"
-    auth_url = spotify_service.get_auth_url(redirect_uri, state="login")  # Use "login" as state to indicate login flow
+    auth_url = spotify_service.get_auth_url(
+        redirect_uri, state="login"
+    )  # Use "login" as state to indicate login flow
     return {"auth_url": auth_url}
 
 
 @router.get("/spotify/callback/")
 async def spotify_callback(
     code: str = Query(None, description="Spotify authorization code"),
-    state: str = Query(None, description="State parameter indicating flow type (e.g., 'login' or 'connection')"),  
-
+    state: str = Query(
+        None,
+        description="State parameter indicating flow type (e.g., 'login' or 'connection')",
+    ),
     error: str = Query(None, description="Spotify error, if any"),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
@@ -147,7 +208,9 @@ async def spotify_callback(
     access_token = token_data.get("access_token") or ""
     refresh_token = token_data.get("refresh_token")
     expires_at = token_data.get("expires_at")
-    user_profile = await spotify_service.get_user_profile(access_token,refresh_token,expires_at)
+    user_profile = await spotify_service.get_user_profile(
+        access_token, refresh_token, expires_at
+    )
     spotify_user_id = user_profile.get("id")
     email = user_profile.get("email")
 
@@ -165,19 +228,22 @@ async def spotify_callback(
         user = existing_user
 
         # Update or create preferences with Spotify data
-        profile = profile_repo.get_by_user_id(cast(int,user.id))
+        profile = profile_repo.get_by_user_id(cast(int, user.id))
         if profile:
-            preferences = preferences_repo.get_by_profile_id(cast(int,profile.id))
+            preferences = preferences_repo.get_by_profile_id(cast(int, profile.id))
             if not preferences:
                 preferences = preferences_repo.create({"profile_id": profile.id})
-                
-            preferences_repo.update_spotify_data(preferences, {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_in": token_data.get("expires_in"),
-                "expires_at": expires_at,
-                "token_type": token_data.get("token_type"),
-            })
+
+            preferences_repo.update_spotify_data(
+                preferences,
+                {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "expires_in": token_data.get("expires_in"),
+                    "expires_at": expires_at,
+                    "token_type": token_data.get("token_type"),
+                },
+            )
             preferences_repo.update(preferences, {"spotify_connected": True})
     else:
         # Check if email is already registered
@@ -187,24 +253,28 @@ async def spotify_callback(
             # get the preferences associated with this user
             profile = profile_repo.get_by_user_id(getattr(user, "id", 0))
             if not profile:
-                profile = profile_repo.create({
-                    "user_id": user.id,
-                    "name": user_profile.get("display_name", "")
-                })
+                profile = profile_repo.create(
+                    {"user_id": user.id, "name": user_profile.get("display_name", "")}
+                )
             preferences = preferences_repo.get_by_profile_id(getattr(profile, "id", 0))
             if not preferences:
                 preferences = preferences_repo.create({"profile_id": profile.id})
-            
-            preferences_repo.update_spotify_data(preferences, {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_in": token_data.get("expires_in"),
-                "expires_at": expires_at,
-                "token_type": token_data.get("token_type"),
-            })
+
+            preferences_repo.update_spotify_data(
+                preferences,
+                {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "expires_in": token_data.get("expires_in"),
+                    "expires_at": expires_at,
+                    "token_type": token_data.get("token_type"),
+                },
+            )
             preferences_repo.update(preferences, {"spotify_connected": True})
-            
-            access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+
+            access_token_expires = timedelta(
+                minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+            )
             jwt_token = create_access_token(
                 data={"sub": user.email}, expires_delta=access_token_expires
             )
@@ -215,44 +285,56 @@ async def spotify_callback(
                     "id": user.id,
                     "email": user.email,
                     "spotify_connected": True,
-                }
+                },
             }
 
         # Create new user
-        user = user_repo.create({
-            "email": email or f"spotify_{spotify_user_id}@spotify.local",
-            "spotify_user_id": spotify_user_id,
-            "is_active": True,
-            "hashed_password": get_password_hash(settings.DEFAULT_SPOTIFY_USER_PASSWORD)
-        })
+        user = user_repo.create(
+            {
+                "email": email or f"spotify_{spotify_user_id}@spotify.local",
+                "spotify_user_id": spotify_user_id,
+                "is_active": True,
+                "hashed_password": get_password_hash(
+                    settings.DEFAULT_SPOTIFY_USER_PASSWORD
+                ),
+            }
+        )
 
         # Create profile
-        profile = profile_repo.create({
-            "user_id": user.id,
-            "name": user_profile.get("display_name", "")
-        })
+        profile = profile_repo.create(
+            {"user_id": user.id, "name": user_profile.get("display_name", "")}
+        )
 
         # Create preferences
-        preferences = preferences_repo.create({
-            "profile_id": profile.id,
-            "spotify_connected": True,
-            "spotify_data": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_in": token_data.get("expires_in"),
-                "expires_at": expires_at,
-                "token_type": token_data.get("token_type"),
+        preferences = preferences_repo.create(
+            {
+                "profile_id": profile.id,
+                "spotify_connected": True,
+                "spotify_data": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "expires_in": token_data.get("expires_in"),
+                    "expires_at": expires_at,
+                    "token_type": token_data.get("token_type"),
+                },
             }
-        })
+        )
 
         # Fetch and store user data
         try:
             top_artists = await spotify_service.get_current_user_top_artists()
             top_tracks = await spotify_service.get_current_user_top_tracks()
-            preferences_repo.update(preferences, {
-                "top_artists": [artist["name"] for artist in top_artists.get("items", [])],
-                "top_tracks": [track["name"] for track in top_tracks.get("items", [])]
-            })
+            preferences_repo.update(
+                preferences,
+                {
+                    "top_artists": [
+                        artist["name"] for artist in top_artists.get("items", [])
+                    ],
+                    "top_tracks": [
+                        track["name"] for track in top_tracks.get("items", [])
+                    ],
+                },
+            )
         except Exception as e:
             # Log error but don't fail login
             print(f"Error fetching user data: {e}")
@@ -271,5 +353,16 @@ async def spotify_callback(
             "id": user.id,
             "email": user.email,
             "spotify_connected": True,
-        }
+        },
     }
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(request: RefreshRequest, db: Session = Depends(get_db)):
+    """Revoke a refresh token (logout)."""
+    refresh_repo = RefreshTokenRepository(db)
+    hashed = hash_refresh_token(request.refresh_token)
+    token_row = refresh_repo.get_by_hash(hashed)
+    if token_row:
+        refresh_repo.revoke(token_row)
+    return None

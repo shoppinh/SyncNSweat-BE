@@ -36,6 +36,7 @@ var/
 .venv/
 venv/
 .env
+.env.compose
 
 # IDE
 .idea/
