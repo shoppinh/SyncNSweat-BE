@@ -44,6 +44,14 @@ async def _generate_draft(
     context_payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     # Keep AI invocation resilient; fall back to deterministic payload if provider errors.
+    default_duration = int(getattr(profile, "workout_duration_minutes", 45) or 45)
+    fallback_payload = {
+        "focus": "General",
+        "duration_minutes": default_duration,
+        "exercise_candidates": [],
+        "song_candidates": [],
+        "source": "fallback_selector_seed",
+    }
     try:
         gemini = GeminiService(db, profile, preferences)
         seed_exercises = [
@@ -51,22 +59,30 @@ async def _generate_draft(
             for w in cast(
                 List[Dict[str, Any]], context_payload.get("recent_workouts") or []
             )
+            if w.get("focus")
         ]
-        ai_response = await gemini.get_workout_recommendations(
-            seed_exercises=seed_exercises
+        ai_response = await gemini.get_workout_draft_recommendations(
+            seed_exercises=seed_exercises,
         )
+        exercise_candidates = cast(
+            List[Dict[str, Any]], ai_response.get("exercise_candidates") or []
+        )
+        song_candidates = cast(
+            List[Dict[str, Any]], ai_response.get("song_candidates") or []
+        )
+        source = "ai" if exercise_candidates or song_candidates else "fallback_selector_seed"
+        if source != "ai":
+            incr("ai_draft_fallback_count")
         return {
             "focus": ai_response.get("focus") or "General",
-            "duration_minutes": ai_response.get("duration_minutes")
-            or getattr(profile, "workout_duration_minutes", 45),
-            "workout_exercises": ai_response.get("workout_exercises") or [],
+            "duration_minutes": ai_response.get("duration_minutes") or default_duration,
+            "exercise_candidates": exercise_candidates,
+            "song_candidates": song_candidates,
+            "source": source,
         }
     except Exception:
-        return {
-            "focus": "General",
-            "duration_minutes": getattr(profile, "workout_duration_minutes", 45),
-            "workout_exercises": [],
-        }
+        incr("ai_draft_fallback_count")
+        return fallback_payload
 
 
 async def process_event(message_payload: Dict[str, Any]) -> None:

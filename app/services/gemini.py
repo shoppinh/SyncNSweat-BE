@@ -87,6 +87,132 @@ class GeminiService:
                 "spotify_playlist": "default-workout-playlist",
             }
 
+    async def get_workout_draft_recommendations(
+        self,
+        seed_exercises: Optional[List[str]] = None,
+        recent_tracks: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a minimal AI draft for the async pipeline.
+        The draft is intentionally small/fast and only returns candidates.
+        """
+        default_duration = int(getattr(self.profile, "workout_duration_minutes", 45) or 45)
+        seed_text = ", ".join(seed_exercises or []) or "None"
+        tracks_text = ", ".join(recent_tracks or []) or "None"
+        prompt = f"""
+        Return ONLY valid JSON object, no markdown.
+        Build a minimal draft for workout planning:
+        - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
+        - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
+        - Duration preference: {default_duration}
+        - Available equipment: {getattr(self.preferences, "available_equipment", [])}
+        - Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
+        - Seed exercises: {seed_text}
+        - User music genres: {getattr(self.preferences, "music_genres", [])}
+        - Recent song context: {tracks_text}
+
+        JSON schema:
+        {{
+          "focus": "string",
+          "duration_minutes": 45,
+          "exercise_candidates": [{{"name": "string", "target_hint": "string"}}],
+          "song_candidates": [{{"song_title": "string", "artist_name": "string"}}]
+        }}
+
+        Constraints:
+        - max 8 exercise_candidates
+        - max 20 song_candidates
+        - keep names canonical and concise
+        """
+        fallback: Dict[str, Any] = {
+            "focus": "General",
+            "duration_minutes": default_duration,
+            "exercise_candidates": [],
+            "song_candidates": [],
+        }
+
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name, contents=prompt
+            )
+        except Exception:
+            return fallback
+
+        try:
+            if response.text is None:
+                return fallback
+            cleaned_response = (
+                response.text.strip().lstrip("```json").rstrip("```").strip()
+            )
+            draft_json = json.loads(cleaned_response)
+        except (json.JSONDecodeError, AttributeError):
+            return fallback
+
+        return self._normalize_draft(draft_json, default_duration)
+
+    def _normalize_draft(self, raw_draft: Any, default_duration: int) -> Dict[str, Any]:
+        if not isinstance(raw_draft, dict):
+            return {
+                "focus": "General",
+                "duration_minutes": default_duration,
+                "exercise_candidates": [],
+                "song_candidates": [],
+            }
+        focus = raw_draft.get("focus") or "General"
+        duration_minutes = raw_draft.get("duration_minutes") or default_duration
+        exercise_candidates = self._normalize_exercise_candidates(
+            raw_draft.get("exercise_candidates")
+        )
+        song_candidates = self._normalize_song_candidates(raw_draft.get("song_candidates"))
+
+        return {
+            "focus": str(focus),
+            "duration_minutes": int(duration_minutes)
+            if isinstance(duration_minutes, (int, float, str))
+            and str(duration_minutes).isdigit()
+            else default_duration,
+            "exercise_candidates": exercise_candidates[:8],
+            "song_candidates": song_candidates[:20],
+        }
+
+    def _normalize_exercise_candidates(self, raw: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        normalized: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("exercise")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            target_hint = item.get("target_hint") or item.get("target")
+            normalized.append(
+                {
+                    "name": name.strip(),
+                    "target_hint": str(target_hint).strip() if target_hint else "",
+                }
+            )
+        return normalized
+
+    def _normalize_song_candidates(self, raw: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        normalized: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("song_title") or item.get("title")
+            artist = item.get("artist_name") or item.get("artist")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            normalized.append(
+                {
+                    "song_title": title.strip(),
+                    "artist_name": artist.strip() if isinstance(artist, str) else "",
+                }
+            )
+        return normalized
+
     def _get_num_exercises_based_on_fitness_level(self) -> int:
         """
         Determine the number of exercises based on the user's fitness level.
