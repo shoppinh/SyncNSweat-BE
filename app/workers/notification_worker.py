@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Final
+from typing import Any, Dict, Final, cast
 
-from aio_pika import IncomingMessage
+from aio_pika.abc import AbstractIncomingMessage
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -20,14 +20,17 @@ QUEUE_NAME: Final[str] = "notification"
 
 def _safe_json(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
-        return value
+        return cast(Dict[str, Any], value)
     return {}
 
 
 def process_event(payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(payload)
     incr("notification_worker_received_count")
-    request_id = int(envelope.payload.get("request_id"))
+    request_id_value = envelope.payload.get("request_id")
+    if request_id_value is None:
+        return
+    request_id = int(request_id_value)
 
     db: Session = SessionLocal()
     repo = WorkoutRequestRepository(db)
@@ -53,7 +56,7 @@ def process_event(payload: Dict[str, Any]) -> None:
         db.close()
 
 
-async def _handle_message(message: IncomingMessage) -> None:
+async def _handle_message(message: AbstractIncomingMessage) -> None:
     async with message.process(requeue=False):
         body = json.loads(message.body.decode("utf-8"))
         process_event(_safe_json(body))

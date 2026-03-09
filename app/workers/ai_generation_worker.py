@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, Final, List, cast
 
-from aio_pika import IncomingMessage
+from aio_pika.abc import AbstractIncomingMessage
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -24,10 +25,14 @@ from app.services.outbox import OutboxService
 QUEUE_NAME: Final[str] = "ai-generation"
 ROUTING_KEY: Final[str] = "workout.context.ready"
 
+logging.basicConfig(level=logging.INFO)
+# logging.getLogger().setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 def _safe_json(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
-        return value
+        return cast(Dict[str, Any], value)
     return {}
 
 
@@ -42,11 +47,14 @@ async def _generate_draft(
     try:
         gemini = GeminiService(db, profile, preferences)
         seed_exercises = [
-            w.get("focus")
-            for w in cast(List[Dict[str, Any]], context_payload.get("recent_workouts") or [])
-            if isinstance(w, dict) and w.get("focus")
+            cast(str, w.get("focus"))
+            for w in cast(
+                List[Dict[str, Any]], context_payload.get("recent_workouts") or []
+            )
         ]
-        ai_response = await gemini.get_workout_recommendations(seed_exercises=seed_exercises)
+        ai_response = await gemini.get_workout_recommendations(
+            seed_exercises=seed_exercises
+        )
         return {
             "focus": ai_response.get("focus") or "General",
             "duration_minutes": ai_response.get("duration_minutes")
@@ -62,6 +70,7 @@ async def _generate_draft(
 
 
 async def process_event(message_payload: Dict[str, Any]) -> None:
+    logger.info("Received message for AI generation: %s", message_payload)
     envelope = EventEnvelope.model_validate(message_payload)
     incr("ai_worker_received_count")
 
@@ -76,51 +85,52 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
     outbox_service = OutboxService(db)
 
     try:
-        request = request_repo.get_by_id(request_id)
-        profile = profile_repo.get_by_id(profile_id)
-        preferences = preferences_repo.get_by_profile_id(profile_id)
-
-        if request is None or profile is None or preferences is None:
-            with db.begin():
-                if request is not None:
-                    request_repo.set_status(
-                        request,
-                        status="FAILED",
-                        error_code="AI_CONTEXT_MISSING",
-                        error_message="Missing request/profile/preferences for AI generation",
-                    )
-            return
-
-        with timed("ai_generation_latency"):
-            draft_payload = await _generate_draft(
-                db,
-                profile=profile,
-                preferences=preferences,
-                context_payload=envelope.payload,
-            )
-
-        next_event = create_event_envelope(
-            event_type=EventType.WORKOUT_DRAFT_GENERATED,
-            source="worker.ai_generation",
-            payload={
-                "request_id": request_id,
-                "user_id": user_id,
-                "profile_id": profile_id,
-                "draft": draft_payload,
-            },
-            saga_id=envelope.saga_id,
-            correlation_id=envelope.correlation_id,
-        )
-
         with db.begin():
-            request_repo.set_status(request, status="DRAFT_READY")
-            outbox_service.enqueue_event(
-                event_id=next_event.event_id,
-                routing_key="workout.draft.generated",
-                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                payload=next_event.model_dump(mode="json"),
+            request = request_repo.get_by_id(request_id)
+            profile = profile_repo.get_by_id(profile_id)
+            preferences = preferences_repo.get_by_profile_id(profile_id)
+
+            if request is None or profile is None or preferences is None:
+                with db.begin_nested():
+                    if request is not None:
+                        request_repo.set_status(
+                            request,
+                            status="FAILED",
+                            error_code="AI_CONTEXT_MISSING",
+                            error_message="Missing request/profile/preferences for AI generation",
+                        )
+                return
+
+            with timed("ai_generation_latency"):
+                draft_payload = await _generate_draft(
+                    db,
+                    profile=profile,
+                    preferences=preferences,
+                    context_payload=envelope.payload,
+                )
+
+            next_event = create_event_envelope(
+                event_type=EventType.WORKOUT_DRAFT_GENERATED,
+                source="worker.ai_generation",
+                payload={
+                    "request_id": request_id,
+                    "user_id": user_id,
+                    "profile_id": profile_id,
+                    "draft": draft_payload,
+                },
+                saga_id=envelope.saga_id,
+                correlation_id=envelope.correlation_id,
             )
-        incr("ai_worker_success_count")
+
+            with db.begin_nested():
+                request_repo.set_status(request, status="DRAFT_READY")
+                outbox_service.enqueue_event(
+                    event_id=next_event.event_id,
+                    routing_key="workout.draft.generated",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=next_event.model_dump(mode="json"),
+                )
+            incr("ai_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
@@ -131,12 +141,15 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
                     error_code="AI_GENERATION_FAILED",
                     error_message=str(exc),
                 )
+        logger.exception("AI generation failed for request_id=%s", request_id)
+        logger.exception(exc)
         incr("ai_worker_failure_count")
     finally:
         db.close()
 
 
-async def _handle_message(message: IncomingMessage) -> None:
+
+async def _handle_message(message: AbstractIncomingMessage) -> None:
     async with message.process(requeue=False):
         payload = json.loads(message.body.decode("utf-8"))
         await process_event(_safe_json(payload))

@@ -19,6 +19,7 @@ DEFAULT_RETRY_SECONDS: Final[int] = 30
 
 logger = logging.getLogger(__name__)
 
+
 async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     manager = RabbitMQConnectionManager(
         amqp_url=settings.RABBITMQ_URL,
@@ -27,37 +28,48 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     publisher = EventPublisher(manager)
 
     processed = 0
-    db: Session = SessionLocal()
-    repo = OutboxEventRepository(db)
+    write_db: Session = SessionLocal()
+    read_db: Session = (
+        SessionLocal()
+    )  # separate session for reading to avoid transaction conflicts
+    repo = OutboxEventRepository(read_db)
 
     try:
         await manager.connect()
         pending_events = repo.get_pending(limit=batch_size)
+
         incr("outbox_pending_batch_size", len(pending_events))
 
         for event in pending_events:
             try:
-                with timed(
-                    "outbox_publish_latency",
-                    tags={"routing_key": getattr(event, "routing_key", "")},
-                ):
-                    await publisher.publish_event(
-                        getattr(event, "routing_key", ""), getattr(event, "payload", {})
-                    )
-                repo.mark_published(event)
-                db.commit()
+                with write_db.begin():
+                    with timed(
+                        "outbox_publish_latency",
+                        tags={"routing_key": getattr(event, "routing_key", "")},
+                    ):
+                        await publisher.publish_event(
+                            getattr(event, "routing_key", ""),
+                            getattr(event, "payload", {}),
+                        )
+
+                    repo.mark_published(event)
+
                 processed += 1
                 incr("outbox_publish_success_count")
-            except Exception as exc:  # noqa: BLE001
-                repo.mark_failed(
-                    event,
-                    error_message=str(exc),
-                    retry_after_seconds=DEFAULT_RETRY_SECONDS,
-                )
-                db.commit()
+
+            except Exception as exc:
+                with write_db.begin():
+                    repo.mark_failed(
+                        event,
+                        error_message=str(exc),
+                        retry_after_seconds=DEFAULT_RETRY_SECONDS,
+                    )
+
                 incr("outbox_publish_failure_count")
+
     finally:
-        db.close()
+        write_db.close()
+        read_db.close()
         await manager.close()
 
     return processed

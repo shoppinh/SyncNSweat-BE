@@ -65,6 +65,132 @@ services:
         condition: service_healthy
     command: python -m debugpy --listen 0.0.0.0:5678 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  worker-ai-generation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-ai-generation
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.ai_generation_worker
+
+  worker-context:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-context
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.context_worker
+
+  worker-exercise:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-exercise
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.exercise_worker
+
+  worker-playlist:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-playlist
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.playlist_worker
+
+  worker-aggregation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-aggregation
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.aggregation_worker
+
+  worker-notification:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syncnsweat-worker-notification
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.compose}
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-syncnsweat}
+      API_URL: ${API_URL:-http://localhost:8000}
+      SPOTIFY_REDIRECT_URL: ${SPOTIFY_REDIRECT_URL:-http://localhost:8000}
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m app.workers.notification_worker
+
 volumes:
   postgres_data:
   rabbitmq_data:
