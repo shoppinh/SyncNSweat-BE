@@ -13,15 +13,55 @@ from app.services.spotify import SpotifyService
 
 
 class GeminiService:
+    # Models tried in order; the next is used when a rate-limit error is encountered.
+    _MODEL_FALLBACK_LIST: List[str] = [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash-preview",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+
     def __init__(self, db: Session, profile: Profile, preferences: Preferences):
         """
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash-lite"
         self.spotify_service = SpotifyService(db, profile, preferences)
         self.profile = profile
         self.preferences = preferences
+
+    async def _generate_content(self, contents: str) -> Any:
+        """
+        Call the Gemini API, rotating through fallback models when a rate-limit
+        error (HTTP 429 / RESOURCE_EXHAUSTED) is encountered.
+
+        Parameters:
+            contents (str): The prompt string to send to the model.
+
+        Returns:
+            Any: The API response object from the first model that succeeds.
+
+        Raises:
+            Exception: Re-raises non-rate-limit errors immediately; raises the
+                last rate-limit exception if every model in the fallback list is
+                exhausted.
+        """
+        last_exc: Optional[Exception] = None
+        for model in self._MODEL_FALLBACK_LIST:
+            try:
+                return await self.client.aio.models.generate_content(
+                    model=model, contents=contents
+                )
+            except Exception as exc:
+                exc_str = str(exc).lower()
+                # Rotate on quota / rate-limit signals; re-raise everything else.
+                if "429" in exc_str or "resource_exhausted" in exc_str or "quota" in exc_str:
+                    print(f"Rate limit hit for model '{model}', rotating to next model. ({exc})")
+                    last_exc = exc
+                    continue
+                raise
+        raise last_exc or RuntimeError("All Gemini models exhausted due to rate limits.")
 
     async def get_workout_recommendations(
         self,
@@ -57,9 +97,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(f"Error generating AI response for workout recommendations. {e}")
             return {
@@ -132,10 +170,9 @@ class GeminiService:
         }
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
-        except Exception:
+            response = await self._generate_content(prompt)
+        except Exception as exc:
+            print(f"Error generating AI response for workout draft recommendations. {exc}")
             return fallback
 
         try:
@@ -258,9 +295,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(
                 f"Error generating AI response for workout schedule recommendations. {e}"
@@ -336,9 +371,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
 
             if response.text is None:
                 return {
@@ -492,9 +525,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
 
             if response.text is None:
                 print("Error generating playlist recommendations. Please try again.")
@@ -752,9 +783,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(f"Error generating AI response for exercise swap: {e}")
             return None
