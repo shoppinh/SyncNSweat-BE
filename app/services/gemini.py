@@ -127,7 +127,7 @@ class GeminiService:
 
     async def get_workout_draft_recommendations(
         self,
-        seed_exercises: Optional[List[str]] = None,
+        seed_focuses: Optional[List[str]] = None,
         recent_tracks: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -135,7 +135,7 @@ class GeminiService:
         The draft is intentionally small/fast and only returns candidates.
         """
         default_duration = int(getattr(self.profile, "workout_duration_minutes", 45) or 45)
-        seed_text = ", ".join(seed_exercises or []) or "None"
+        seed_text = ", ".join(seed_focuses or []) or "None"
         tracks_text = ", ".join(recent_tracks or []) or "None"
         prompt = f"""
         Return ONLY valid JSON object, no markdown.
@@ -205,8 +205,8 @@ class GeminiService:
         return {
             "focus": str(focus),
             "duration_minutes": int(duration_minutes)
-            if isinstance(duration_minutes, (int, float, str))
-            and str(duration_minutes).isdigit()
+            if isinstance(duration_minutes, (int, float))
+            or (isinstance(duration_minutes, str) and duration_minutes.strip().isdigit())
             else default_duration,
             "exercise_candidates": exercise_candidates[:8],
             "song_candidates": song_candidates[:20],

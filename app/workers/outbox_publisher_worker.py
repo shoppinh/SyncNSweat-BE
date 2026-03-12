@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy.orm import Session
 
@@ -34,24 +34,39 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     try:
         await manager.connect()
         pending_events = repo.get_pending(limit=batch_size)
-        if pending_events:
+        
+        # Extract fields into plain dicts before commit to avoid expired ORM instances.
+        # SQLAlchemy's default expire_on_commit=True will expire ORM instances after commit,
+        # causing implicit DB reads on attribute access during the publish loop.
+        # This can inadvertently open new transactions that stay open across async I/O.
+        event_data: list[dict[str, Any]] = [
+            {
+                "id": getattr(event, "id", None),
+                "routing_key": getattr(event, "routing_key", ""),
+                "payload": getattr(event, "payload", {}),
+                "orm": event,
+            }
+            for event in pending_events
+        ]
+        
+        if event_data:
             # Persist claim and release row locks before external I/O.
             db.commit()
 
-        incr("outbox_pending_batch_size", len(pending_events))
+        incr("outbox_pending_batch_size", len(event_data))
 
-        for event in pending_events:
+        for event in event_data:
             try:
                 with timed(
                     "outbox_publish_latency",
-                    tags={"routing_key": getattr(event, "routing_key", "")},
+                    tags={"routing_key": event["routing_key"]},
                 ):
                     await publisher.publish_event(
-                        getattr(event, "routing_key", ""),
-                        getattr(event, "payload", {}),
+                        event["routing_key"],
+                        event["payload"],
                     )
 
-                repo.mark_published(event)
+                repo.mark_published(event["orm"])
                 db.commit()
 
                 processed += 1
@@ -60,7 +75,7 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
             except Exception as exc:
                 db.rollback()
                 repo.mark_failed(
-                    event,
+                    event["orm"],
                     error_message=str(exc),
                     retry_after_seconds=DEFAULT_RETRY_SECONDS,
                 )

@@ -11,10 +11,11 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
-from app.messaging.events import EventEnvelope, EventType, create_event_envelope
-from app.observability.metrics import incr, timed
+from app.messaging.events import (EventEnvelope, EventType,
+                                  create_event_envelope)
 from app.models.preferences import Preferences
 from app.models.profile import Profile
+from app.observability.metrics import incr, timed
 from app.repositories.exercise import ExerciseRepository
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
@@ -130,13 +131,16 @@ def _map_exercise_candidates(
         legacy = cast(List[Dict[str, Any]], draft.get("workout_exercises") or [])
         candidates = [{"name": ex.get("name") or ex.get("exercise")} for ex in legacy]
 
+    # Fetch exercise names once for all candidates to avoid repeated DB queries
+    exercise_names = exercise_repo.get_all_names()
+
     mapped: List[Dict[str, Any]] = []
     for candidate in candidates:
         raw_name = candidate.get("name") or candidate.get("exercise")
         name = str(raw_name).strip() if raw_name is not None else ""
         if not name:
             continue
-        resolved = _find_exercise_by_name(exercise_repo, name)
+        resolved = _find_exercise_by_name(exercise_repo, name, exercise_names=exercise_names)
         if resolved is None:
             continue
         mapped.append(
@@ -159,7 +163,7 @@ def _map_exercise_candidates(
 
 
 def _find_exercise_by_name(
-    exercise_repo: ExerciseRepository, name: str
+    exercise_repo: ExerciseRepository, name: str, exercise_names: List[tuple[int, str]]
 ) -> Optional[Dict[str, Any]]:
     exact = exercise_repo.get_by_name_exact(name)
     if exact is not None:
@@ -176,7 +180,7 @@ def _find_exercise_by_name(
             "mapping_source": "db_exact",
         }
 
-    fuzzy = get_top_candidate_by_repo(name, exercise_repo, score_cutoff=80.0)
+    fuzzy = get_top_candidate_by_repo(name, candidate_names=exercise_names,  score_cutoff=80.0, )
     if fuzzy is not None:
         resolved = exercise_repo.get_by_id(fuzzy.id)
         if resolved is not None:

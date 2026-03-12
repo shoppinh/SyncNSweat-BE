@@ -57,7 +57,6 @@ services:
       - ./:/app
     ports:
       - "8000:8000"
-      - "5678:5678"
     depends_on:
       db:
         condition: service_healthy
@@ -84,9 +83,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5679:5679"
-    command: python -m debugpy --listen 0.0.0.0:5679 -m app.workers.ai_generation_worker
+    command: python -m app.workers.ai_generation_worker
 
   worker-context:
     build:
@@ -107,9 +104,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5680:5680"
-    command: python -m debugpy --listen 0.0.0.0:5680 -m app.workers.context_worker
+    command: python -m app.workers.context_worker
 
   worker-exercise:
     build:
@@ -130,9 +125,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5681:5681"
-    command: python -m debugpy --listen 0.0.0.0:5681 -m app.workers.exercise_worker
+    command: python -m app.workers.exercise_worker
 
   worker-playlist:
     build:
@@ -153,9 +146,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5682:5682"
-    command: python -m debugpy --listen 0.0.0.0:5682 -m app.workers.playlist_worker
+    command: python -m app.workers.playlist_worker
 
   worker-aggregation:
     build:
@@ -176,9 +167,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5683:5683"
-    command: python -m debugpy --listen 0.0.0.0:5683 -m app.workers.aggregation_worker
+    command: python -m app.workers.aggregation_worker
 
   worker-notification:
     build:
@@ -199,9 +188,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    ports:
-      - "5684:5684"
-    command: python -m debugpy --listen 0.0.0.0:5684 -m app.workers.notification_worker
+    command: python -m app.workers.notification_worker
 
 volumes:
   postgres_data:

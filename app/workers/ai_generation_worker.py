@@ -12,10 +12,11 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
-from app.messaging.events import EventEnvelope, EventType, create_event_envelope
-from app.observability.metrics import incr, timed
+from app.messaging.events import (EventEnvelope, EventType,
+                                  create_event_envelope)
 from app.models.preferences import Preferences
 from app.models.profile import Profile
+from app.observability.metrics import incr, timed
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
 from app.repositories.workout_request import WorkoutRequestRepository
@@ -54,7 +55,7 @@ async def _generate_draft(
     }
     try:
         gemini = GeminiService(db, profile, preferences)
-        seed_exercises = [
+        seed_focuses = [
             cast(str, w.get("focus"))
             for w in cast(
                 List[Dict[str, Any]], context_payload.get("recent_workouts") or []
@@ -62,7 +63,7 @@ async def _generate_draft(
             if w.get("focus")
         ]
         ai_response = await gemini.get_workout_draft_recommendations(
-            seed_exercises=seed_exercises,
+            seed_focuses=seed_focuses,
         )
         exercise_candidates = cast(
             List[Dict[str, Any]], ai_response.get("exercise_candidates") or []
