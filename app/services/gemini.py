@@ -13,15 +13,55 @@ from app.services.spotify import SpotifyService
 
 
 class GeminiService:
+    # Models tried in order; the next is used when a rate-limit error is encountered.
+    _MODEL_FALLBACK_LIST: List[str] = [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash-preview",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+
     def __init__(self, db: Session, profile: Profile, preferences: Preferences):
         """
         Initializes the Gemini Service client using the API key from settings.
         """
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash-lite"
         self.spotify_service = SpotifyService(db, profile, preferences)
         self.profile = profile
         self.preferences = preferences
+
+    async def _generate_content(self, contents: str) -> Any:
+        """
+        Call the Gemini API, rotating through fallback models when a rate-limit
+        error (HTTP 429 / RESOURCE_EXHAUSTED) is encountered.
+
+        Parameters:
+            contents (str): The prompt string to send to the model.
+
+        Returns:
+            Any: The API response object from the first model that succeeds.
+
+        Raises:
+            Exception: Re-raises non-rate-limit errors immediately; raises the
+                last rate-limit exception if every model in the fallback list is
+                exhausted.
+        """
+        last_exc: Optional[Exception] = None
+        for model in self._MODEL_FALLBACK_LIST:
+            try:
+                return await self.client.aio.models.generate_content(
+                    model=model, contents=contents
+                )
+            except Exception as exc:
+                exc_str = str(exc).lower()
+                # Rotate on quota / rate-limit signals; re-raise everything else.
+                if "429" in exc_str or "resource_exhausted" in exc_str or "quota" in exc_str:
+                    print(f"Rate limit hit for model '{model}', rotating to next model. ({exc})")
+                    last_exc = exc
+                    continue
+                raise
+        raise last_exc or RuntimeError("All Gemini models exhausted due to rate limits.")
 
     async def get_workout_recommendations(
         self,
@@ -57,9 +97,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(f"Error generating AI response for workout recommendations. {e}")
             return {
@@ -86,6 +124,131 @@ class GeminiService:
                 "duration_minutes": 45,
                 "spotify_playlist": "default-workout-playlist",
             }
+
+    async def get_workout_draft_recommendations(
+        self,
+        seed_focuses: Optional[List[str]] = None,
+        recent_tracks: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a minimal AI draft for the async pipeline.
+        The draft is intentionally small/fast and only returns candidates.
+        """
+        default_duration = int(getattr(self.profile, "workout_duration_minutes", 45) or 45)
+        seed_text = ", ".join(seed_focuses or []) or "None"
+        tracks_text = ", ".join(recent_tracks or []) or "None"
+        prompt = f"""
+        Return ONLY valid JSON object, no markdown.
+        Build a minimal draft for workout planning:
+        - Fitness goal: {getattr(self.profile, "fitness_goal", "general_fitness")}
+        - Fitness level: {getattr(self.profile, "fitness_level", "beginner")}
+        - Duration preference: {default_duration}
+        - Available equipment: {getattr(self.preferences, "available_equipment", [])}
+        - Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
+        - Seed exercises: {seed_text}
+        - User music genres: {getattr(self.preferences, "music_genres", [])}
+        - Recent song context: {tracks_text}
+
+        JSON schema:
+        {{
+          "focus": "string",
+          "duration_minutes": 45,
+          "exercise_candidates": [{{"name": "string", "target_hint": "string"}}],
+          "song_candidates": [{{"song_title": "string", "artist_name": "string"}}]
+        }}
+
+        Constraints:
+        - max 8 exercise_candidates
+        - max 20 song_candidates
+        - keep names canonical and concise
+        """
+        fallback: Dict[str, Any] = {
+            "focus": "General",
+            "duration_minutes": default_duration,
+            "exercise_candidates": [],
+            "song_candidates": [],
+        }
+
+        try:
+            response = await self._generate_content(prompt)
+        except Exception as exc:
+            print(f"Error generating AI response for workout draft recommendations. {exc}")
+            return fallback
+
+        try:
+            if response.text is None:
+                return fallback
+            cleaned_response = (
+                response.text.strip().lstrip("```json").rstrip("```").strip()
+            )
+            draft_json = json.loads(cleaned_response)
+        except (json.JSONDecodeError, AttributeError):
+            return fallback
+
+        return self._normalize_draft(draft_json, default_duration)
+
+    def _normalize_draft(self, raw_draft: Any, default_duration: int) -> Dict[str, Any]:
+        if not isinstance(raw_draft, dict):
+            return {
+                "focus": "General",
+                "duration_minutes": default_duration,
+                "exercise_candidates": [],
+                "song_candidates": [],
+            }
+        focus = raw_draft.get("focus") or "General"
+        duration_minutes = raw_draft.get("duration_minutes") or default_duration
+        exercise_candidates = self._normalize_exercise_candidates(
+            raw_draft.get("exercise_candidates")
+        )
+        song_candidates = self._normalize_song_candidates(raw_draft.get("song_candidates"))
+
+        return {
+            "focus": str(focus),
+            "duration_minutes": int(duration_minutes)
+            if isinstance(duration_minutes, (int, float))
+            or (isinstance(duration_minutes, str) and duration_minutes.strip().isdigit())
+            else default_duration,
+            "exercise_candidates": exercise_candidates[:8],
+            "song_candidates": song_candidates[:20],
+        }
+
+    def _normalize_exercise_candidates(self, raw: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        normalized: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("exercise")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            target_hint = item.get("target_hint") or item.get("target")
+            normalized.append(
+                {
+                    "name": name.strip(),
+                    "target_hint": str(target_hint).strip() if target_hint else "",
+                }
+            )
+        return normalized
+
+    def _normalize_song_candidates(self, raw: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        normalized: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("song_title") or item.get("title")
+            artist = item.get("artist_name") or item.get("artist")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            normalized.append(
+                {
+                    "song_title": title.strip(),
+                    "artist_name": artist.strip() if isinstance(artist, str) else "",
+                }
+            )
+        return normalized
 
     def _get_num_exercises_based_on_fitness_level(self) -> int:
         """
@@ -132,9 +295,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(
                 f"Error generating AI response for workout schedule recommendations. {e}"
@@ -210,9 +371,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
 
             if response.text is None:
                 return {
@@ -366,9 +525,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
 
             if response.text is None:
                 print("Error generating playlist recommendations. Please try again.")
@@ -626,9 +783,7 @@ class GeminiService:
         """
 
         try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name, contents=prompt
-            )
+            response = await self._generate_content(prompt)
         except Exception as e:
             print(f"Error generating AI response for exercise swap: {e}")
             return None

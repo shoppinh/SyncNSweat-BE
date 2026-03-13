@@ -126,31 +126,26 @@ def process_event(payload: Dict[str, Any], *, is_exercise_event: bool) -> None:
     db: Session = SessionLocal()
     state_repo = WorkflowStateRepository(db)
     outbox_repo = OutboxEventRepository(db)
+    outbox_service = OutboxService(db)
     both_ready = False
 
     try:
         with timed("aggregation_latency"):
-            # Step 1: Update workflow state atomically. Capture readiness flag
-            # before the transaction closes so we can act on it afterwards.
-            # _persist_finalized_workout must NOT be called inside this block
-            # because base.py's create() commits internally, which would close
-            # this transaction and cause "Can't operate on closed transaction
-            # inside context manager" on the subsequent db.refresh() call.
-            with db.begin():
-                state = state_repo.get_or_create(saga_id=envelope.saga_id, request_id=request_id)
-                if is_exercise_event:
-                    state.exercises_ready = True
-                    state.exercises_event_id = envelope.event_id
-                else:
-                    state.playlist_ready = True
-                    state.playlist_event_id = envelope.event_id
+            # Step 1: Update workflow state and commit claim/progress.
+            state = state_repo.get_or_create(saga_id=envelope.saga_id, request_id=request_id)
+            if is_exercise_event:
+                state.exercises_ready = True
+                state.exercises_event_id = envelope.event_id
+            else:
+                state.playlist_ready = True
+                state.playlist_event_id = envelope.event_id
 
-                db.add(state)
-                both_ready = state.exercises_ready and state.playlist_ready
+            db.add(state)
+            both_ready = state.exercises_ready and state.playlist_ready
+            db.commit()
 
             # Step 2: If both sides are ready, persist the workout and enqueue
-            # the completion event. Each repo.create() call commits on its own,
-            # so this runs outside the explicit transaction above.
+            # the completion event in the same session/transaction boundary.
             if both_ready:
                 exercises_payload = _extract_latest_payload(
                     outbox_repo,
@@ -182,23 +177,16 @@ def process_event(payload: Dict[str, Any], *, is_exercise_event: bool) -> None:
                     saga_id=envelope.saga_id,
                     correlation_id=envelope.correlation_id,
                 )
-                # enqueue_event does not commit by itself; use a separate
-                # Session for outbox writes so we don't interfere with the
-                # current session/transaction lifecycle on `db`.
-                write_db = SessionLocal()
-                write_outbox = OutboxService(write_db)
-                try:
-                    with write_db.begin():
-                        write_outbox.enqueue_event(
-                            event_id=completed.event_id,
-                            routing_key="workout.completed",
-                            exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                            payload=completed.model_dump(mode="json"),
-                        )
-                finally:
-                    write_db.close()
+                outbox_service.enqueue_event(
+                    event_id=completed.event_id,
+                    routing_key="workout.completed",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=completed.model_dump(mode="json"),
+                )
+                db.commit()
         incr("aggregation_worker_success_count")
     except Exception as exc:
+        db.rollback()
         # Keep aggregation worker resilient. Notification phase handles terminal failure events.
         # Still has to enqueue an event indicating failure for the notification worker to pick up and update the request status accordingly.
         logger.exception(f"Error processing event in aggregation worker: {exc}")
@@ -212,19 +200,15 @@ def process_event(payload: Dict[str, Any], *, is_exercise_event: bool) -> None:
             correlation_id=envelope.correlation_id,
         )
         try:
-            write_db = SessionLocal()
-            write_outbox = OutboxService(write_db)
-            try:
-                with write_db.begin():
-                    write_outbox.enqueue_event(
-                        event_id=failed.event_id,
-                        routing_key="workout.failed",
-                        exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                        payload=failed.model_dump(mode="json"),
-                    )
-            finally:
-                write_db.close()
+            outbox_service.enqueue_event(
+                event_id=failed.event_id,
+                routing_key="workout.failed",
+                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                payload=failed.model_dump(mode="json"),
+            )
+            db.commit()
         except Exception:
+            db.rollback()
             logger.exception("Failed to enqueue WORKOUT_PLAN_FAILED outbox event")
         incr("aggregation_worker_failure_count")
     finally:

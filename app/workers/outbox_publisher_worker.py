@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy.orm import Session
 
@@ -28,48 +28,63 @@ async def publish_outbox_once(batch_size: int = DEFAULT_BATCH_SIZE) -> int:
     publisher = EventPublisher(manager)
 
     processed = 0
-    write_db: Session = SessionLocal()
-    read_db: Session = (
-        SessionLocal()
-    )  # separate session for reading to avoid transaction conflicts
-    repo = OutboxEventRepository(read_db)
+    db: Session = SessionLocal()
+    repo = OutboxEventRepository(db)
 
     try:
         await manager.connect()
         pending_events = repo.get_pending(limit=batch_size)
+        
+        # Extract fields into plain dicts before commit to avoid expired ORM instances.
+        # SQLAlchemy's default expire_on_commit=True will expire ORM instances after commit,
+        # causing implicit DB reads on attribute access during the publish loop.
+        # This can inadvertently open new transactions that stay open across async I/O.
+        event_data: list[dict[str, Any]] = [
+            {
+                "id": getattr(event, "id", None),
+                "routing_key": getattr(event, "routing_key", ""),
+                "payload": getattr(event, "payload", {}),
+                "orm": event,
+            }
+            for event in pending_events
+        ]
+        
+        if event_data:
+            # Persist claim and release row locks before external I/O.
+            db.commit()
 
-        incr("outbox_pending_batch_size", len(pending_events))
+        incr("outbox_pending_batch_size", len(event_data))
 
-        for event in pending_events:
+        for event in event_data:
             try:
-                with write_db.begin():
-                    with timed(
-                        "outbox_publish_latency",
-                        tags={"routing_key": getattr(event, "routing_key", "")},
-                    ):
-                        await publisher.publish_event(
-                            getattr(event, "routing_key", ""),
-                            getattr(event, "payload", {}),
-                        )
+                with timed(
+                    "outbox_publish_latency",
+                    tags={"routing_key": event["routing_key"]},
+                ):
+                    await publisher.publish_event(
+                        event["routing_key"],
+                        event["payload"],
+                    )
 
-                    repo.mark_published(event)
+                repo.mark_published(event["orm"])
+                db.commit()
 
                 processed += 1
                 incr("outbox_publish_success_count")
 
             except Exception as exc:
-                with write_db.begin():
-                    repo.mark_failed(
-                        event,
-                        error_message=str(exc),
-                        retry_after_seconds=DEFAULT_RETRY_SECONDS,
-                    )
+                db.rollback()
+                repo.mark_failed(
+                    event["orm"],
+                    error_message=str(exc),
+                    retry_after_seconds=DEFAULT_RETRY_SECONDS,
+                )
+                db.commit()
 
                 incr("outbox_publish_failure_count")
 
     finally:
-        write_db.close()
-        read_db.close()
+        db.close()
         await manager.close()
 
     return processed

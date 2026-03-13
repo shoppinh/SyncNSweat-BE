@@ -100,7 +100,7 @@ class BaseRepository(Generic[ModelType]):
         """
         db_obj = self.model(**obj_in)
         self.db.add(db_obj)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(db_obj)
         return db_obj
 
@@ -119,7 +119,7 @@ class BaseRepository(Generic[ModelType]):
             if hasattr(db_obj, field):
                 setattr(db_obj, field, value)
         self.db.add(db_obj)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(db_obj)
         return db_obj
 
@@ -131,7 +131,7 @@ class BaseRepository(Generic[ModelType]):
             db_obj: Model instance to delete
         """
         self.db.delete(db_obj)
-        self.db.commit()
+        self.db.flush()
 
     def exists(self, **filters: Any) -> bool:
         """

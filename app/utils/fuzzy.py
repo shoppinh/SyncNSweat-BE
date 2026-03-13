@@ -1,8 +1,9 @@
+from typing import List
+
 from rapidfuzz import fuzz
 
-from app.repositories.exercise import ExerciseRepository
-
 from app.schemas.candidate import CandidateResponse
+
 
 def _score(query: str, choice: str) -> float:
     """Return a similarity score (0-100) between query and choice.
@@ -31,12 +32,11 @@ def fuzzy_match_candidates(
 
 
 def get_top_candidate_by_repo(
-    query: str, exercise_repo: ExerciseRepository, limit: int = 5, score_cutoff: float = 80.0
+    query: str, candidate_names: List[tuple[int, str]],limit: int = 5, score_cutoff: float = 80.0,
 ) -> CandidateResponse | None:
     """Query an ExerciseRepository for lightweight candidates and return the best match dict or None.
 
     `exercise_repo` is expected to implement `get_all_names()` which returns (id, name) tuples.
     """
-    candidates = exercise_repo.get_all_names()
-    matches = fuzzy_match_candidates(query, candidates, limit=limit, score_cutoff=score_cutoff)
+    matches = fuzzy_match_candidates(query, candidates = candidate_names, limit=limit, score_cutoff=score_cutoff)
     return matches[0] if matches else None

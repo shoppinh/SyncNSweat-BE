@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from sqlalchemy import and_, asc, desc, or_
+from sqlalchemy import and_, asc, desc, or_, text
 from sqlalchemy.orm import Session
 
 from app.models.outbox_event import OutboxEvent
@@ -35,57 +35,52 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
 
     def get_pending(self, limit: int = 100) -> List[OutboxEvent]:
         now = datetime.now(timezone.utc)
-        # Claim pending events using row-level locking to avoid multiple
-        # workers processing the same event concurrently. We mark claimed
-        # rows as IN_PROGRESS and commit so other workers skip them.
-        query = (
-            self.db.query(OutboxEvent)
-            .filter(OutboxEvent.published_at.is_(None))
-            .filter(
-                or_(
-                    OutboxEvent.status == "PENDING",
-                    and_(
-                        OutboxEvent.status == "FAILED",
-                        or_(
-                            OutboxEvent.next_retry_at.is_(None),
-                            OutboxEvent.next_retry_at <= now,
-                        ),
-                    ),
+        # Atomically claim pending events using a single UPDATE ... RETURNING
+        # so this repository can participate in a broader/global transaction
+        # managed by the caller. We do NOT commit/rollback here.
+        sql = text(
+            """
+            WITH cte AS (
+              SELECT id
+              FROM outbox_events
+              WHERE published_at IS NULL
+                AND (
+                  status = 'PENDING'
+                  OR (status = 'FAILED' AND (next_retry_at IS NULL OR next_retry_at <= :now))
                 )
+              ORDER BY created_at
+              LIMIT :limit
+              FOR UPDATE SKIP LOCKED
             )
-            .order_by(asc(OutboxEvent.created_at))
-            .limit(limit)
+            UPDATE outbox_events
+            SET status = 'IN_PROGRESS'
+            WHERE id IN (SELECT id FROM cte)
+            RETURNING id
+            """
         )
 
-        # Use FOR UPDATE SKIP LOCKED when supported by the DB (e.g. Postgres)
-        try:
-            pending = query.with_for_update(skip_locked=True).all()
-        except Exception:
-            # Fallback: if the DB does not support SKIP LOCKED, fall back to
-            # a plain select. This may allow duplicate processing in some
-            # deployments; prefer a DB that supports row locking.
-            pending = query.all()
+        result = self.db.execute(sql, {"now": now, "limit": limit})
+        rows = result.fetchall()
+        ids = [r[0] for r in rows]
 
-        # Mark claimed events as IN_PROGRESS so other workers won't pick them
-        # up on subsequent polls. Commit here to persist the claim.
-        for event in pending:
-            event.status = "IN_PROGRESS"
-            self.db.add(event)
+        if not ids:
+            return []
 
-        if pending:
-            try:
-                self.db.commit()
-            except Exception:
-                # If we fail to commit the claim, rollback so events remain
-                # available for other workers.
-                self.db.rollback()
+        # Load ORM instances for the claimed rows and return them. Do not
+        # commit here; caller's transaction should handle persistence.
+        pending = (
+            self.db.query(OutboxEvent)
+            .filter(OutboxEvent.id.in_(ids))
+            .order_by(asc(OutboxEvent.created_at))
+            .all()
+        )
 
         return pending
 
     def mark_published(self, event: OutboxEvent) -> None:
         event.status = "PUBLISHED"
-        event.published_at = datetime.now(timezone.utc)
-        event.next_retry_at = None
+        event.published_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+        event.next_retry_at = None  # type: ignore[assignment]
         event.last_error = None
         self.db.add(event)
 
@@ -100,7 +95,7 @@ class OutboxEventRepository(BaseRepository[OutboxEvent]):
         event.attempt_count = (event.attempt_count or 0) + 1
         event.next_retry_at = datetime.now(timezone.utc) + timedelta(
             seconds=retry_after_seconds
-        )
+        )  # type: ignore[assignment]
         event.last_error = error_message[:4000]
         self.db.add(event)
 

@@ -44,7 +44,7 @@ class PreferencesRepository(BaseRepository[Preferences]):
         setattr(preferences, "spotify_data", spotify_data)
         flag_modified(preferences, "spotify_data")
         self.db.add(preferences)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(preferences)
         return preferences
 
@@ -63,6 +63,6 @@ class PreferencesRepository(BaseRepository[Preferences]):
         setattr(preferences, field, value)
         flag_modified(preferences, field)
         self.db.add(preferences)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(preferences)
         return preferences

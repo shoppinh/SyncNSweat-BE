@@ -98,36 +98,35 @@ async def suggest_today_workout(
         outbox_service = OutboxService(db)
 
         try:
-            workout_request = WorkoutRequest(
-                user_id=current_user.id,
-                profile_id=profile.id,
-                saga_id=saga_uuid,
-                status="PENDING",
-            )
-            db.add(workout_request)
-            db.flush()
+            with db.begin_nested():  # savepoint — rolls back only this block on failure
+                workout_request = WorkoutRequest(
+                    user_id=current_user.id,
+                    profile_id=profile.id,
+                    saga_id=saga_uuid,
+                    status="PENDING",
+                )
+                db.add(workout_request)
+                db.flush()
 
-            event = create_event_envelope(
-                event_type=EventType.WORKOUT_PLAN_REQUESTED,
-                source="api.workouts",
-                payload={
-                    "request_id": workout_request.id,
-                    "user_id": current_user.id,
-                    "profile_id": profile.id,
-                },
-                saga_id=saga_id,
-                correlation_id=saga_id,
-            )
+                event = create_event_envelope(
+                    event_type=EventType.WORKOUT_PLAN_REQUESTED,
+                    source="api.workouts",
+                    payload={
+                        "request_id": workout_request.id,
+                        "user_id": current_user.id,
+                        "profile_id": profile.id,
+                    },
+                    saga_id=saga_id,
+                    correlation_id=saga_id,
+                )
 
-            outbox_service.enqueue_event(
-                event_id=event.event_id,
-                routing_key="workout.requested",
-                exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                payload=event.model_dump(mode="json"),
-            )
-            db.commit()
+                outbox_service.enqueue_event(
+                    event_id=event.event_id,
+                    routing_key="workout.requested",
+                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                    payload=event.model_dump(mode="json"),
+                )
         except Exception as exc:
-            db.rollback()
             if settings.ASYNC_PIPELINE_STRICT_MODE:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -233,8 +232,9 @@ async def suggest_today_workout(
         # First try an exact case-insensitive match, then fall back to a contains match
         # (useful when AI returns slightly different spacing/casing).
         name_clean = str(name).strip()
+        exercise_names = exercise_repo.get_all_names()
         # Prefer a fuzzy match against existing DB exercises first
-        best = get_top_candidate_by_repo(name_clean, exercise_repo, score_cutoff=80.0)
+        best = get_top_candidate_by_repo(name_clean, candidate_names=exercise_names, score_cutoff=80.0)
         if best:
             exercise_obj = exercise_repo.get_by_id(best.id)
         else:
@@ -635,11 +635,12 @@ async def generate_workout_schedule(
             # (useful when AI returns slightly different spacing/casing).
             name_clean = str(name).strip()
             exercise_obj = exercise_repo.get_by_name_exact(name_clean)
+            exercise_names = exercise_repo.get_all_names()
 
             if not exercise_obj:
                 # Try fuzzy lookup first
                 best = get_top_candidate_by_repo(
-                    name_clean, exercise_repo, score_cutoff=80.0
+                    name_clean, candidate_names=exercise_names, score_cutoff=80.0
                 )
                 if best:
                     exercise_obj = exercise_repo.get_by_id(best.id)
@@ -773,8 +774,9 @@ async def swap_workout_exercise(
         # Update the exercise with the new data from Gemini
         # Prefer fuzzy-match to existing DB exercises before creating a stub
         new_name_clean = str(new_exercise_data.get("name", "")).strip()
+        exercise_names = exercise_repo.get_all_names()
         best = get_top_candidate_by_repo(
-            new_name_clean, exercise_repo, score_cutoff=80.0
+            new_name_clean, candidate_names=exercise_names, score_cutoff=80.0
         )
         if best:
             new_exercise = exercise_repo.get_by_id(best.id)
