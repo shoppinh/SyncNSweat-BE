@@ -64,9 +64,15 @@ async def _resolve_playlist_from_ai_candidates(
         return None
 
     spotify_service = SpotifyService(db, profile, preferences)
-    me = spotify_service.make_api_call(
-        method="GET",
-        url=f"{spotify_service.api_base_url}/me",
+    # make_api_call() is synchronous; run it in a thread executor so it does
+    # not block the event loop while waiting on the HTTP response.
+    loop = asyncio.get_running_loop()
+    me = await loop.run_in_executor(
+        None,
+        lambda: spotify_service.make_api_call(
+            method="GET",
+            url=f"{spotify_service.api_base_url}/me",
+        ),
     )
     user_id = me.get("id")
     if not user_id:
@@ -164,7 +170,6 @@ async def _resolve_playlist(
 
 
 async def process_event(payload: Dict[str, Any]) -> None:
-    
     envelope = EventEnvelope.model_validate(payload)
     incr("playlist_worker_received_count")
 
