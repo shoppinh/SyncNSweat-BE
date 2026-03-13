@@ -102,52 +102,71 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
     outbox_service = OutboxService(db)
 
     try:
+        # Short transaction 1: read required data.  Detach profile/preferences
+        # before committing so their attributes remain accessible after the
+        # transaction closes (expire_on_commit=True would otherwise expire them).
         with db.begin():
             request = request_repo.get_by_id(request_id)
             profile = profile_repo.get_by_id(profile_id)
             preferences = preferences_repo.get_by_profile_id(profile_id)
 
             if request is None or profile is None or preferences is None:
-                with db.begin_nested():
-                    if request is not None:
-                        request_repo.set_status(
-                            request,
-                            status="FAILED",
-                            error_code="AI_CONTEXT_MISSING",
-                            error_message="Missing request/profile/preferences for AI generation",
-                        )
+                if request is not None:
+                    request_repo.set_status(
+                        request,
+                        status="FAILED",
+                        error_code="AI_CONTEXT_MISSING",
+                        error_message="Missing request/profile/preferences for AI generation",
+                    )
+                else:
+                    logger.warning(
+                        "AI generation skipped: request_id=%s not found", request_id
+                    )
                 return
 
-            with timed("ai_generation_latency"):
-                draft_payload = await _generate_draft(
-                    db,
-                    profile=profile,
-                    preferences=preferences,
-                    context_payload=envelope.payload,
-                )
+            # Detach profile and preferences so their column attributes remain
+            # accessible after this transaction commits (expire_on_commit=True
+            # would otherwise expire them on the session).  request is not
+            # expunged because it will be re-fetched in the write transaction.
+            db.expunge(profile)
+            db.expunge(preferences)
 
-            next_event = create_event_envelope(
-                event_type=EventType.WORKOUT_DRAFT_GENERATED,
-                source="worker.ai_generation",
-                payload={
-                    "request_id": request_id,
-                    "user_id": user_id,
-                    "profile_id": profile_id,
-                    "draft": draft_payload,
-                },
-                saga_id=envelope.saga_id,
-                correlation_id=envelope.correlation_id,
+        # Call the external Gemini API outside any DB transaction to avoid
+        # holding a connection or row-level locks across network I/O.
+        with timed("ai_generation_latency"):
+            draft_payload = await _generate_draft(
+                db,
+                profile=profile,
+                preferences=preferences,
+                context_payload=envelope.payload,
             )
 
-            with db.begin_nested():
-                request_repo.set_status(request, status="DRAFT_READY")
-                outbox_service.enqueue_event(
-                    event_id=next_event.event_id,
-                    routing_key="workout.draft.generated",
-                    exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
-                    payload=next_event.model_dump(mode="json"),
-                )
-            incr("ai_worker_success_count")
+        next_event = create_event_envelope(
+            event_type=EventType.WORKOUT_DRAFT_GENERATED,
+            source="worker.ai_generation",
+            payload={
+                "request_id": request_id,
+                "user_id": user_id,
+                "profile_id": profile_id,
+                "draft": draft_payload,
+            },
+            saga_id=envelope.saga_id,
+            correlation_id=envelope.correlation_id,
+        )
+
+        # Short transaction 2: write status and outbox entry.
+        with db.begin():
+            request = request_repo.get_by_id(request_id)
+            if request is not None:
+                with db.begin_nested():
+                    request_repo.set_status(request, status="DRAFT_READY")
+                    outbox_service.enqueue_event(
+                        event_id=next_event.event_id,
+                        routing_key="workout.draft.generated",
+                        exchange_name=settings.RABBITMQ_EXCHANGE_NAME,
+                        payload=next_event.model_dump(mode="json"),
+                    )
+        incr("ai_worker_success_count")
     except Exception as exc:
         with db.begin():
             request = request_repo.get_by_id(request_id)
