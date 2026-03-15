@@ -145,7 +145,7 @@ class GeminiService:
         - Duration preference: {default_duration}
         - Available equipment: {getattr(self.preferences, "available_equipment", [])}
         - Target muscle groups: {getattr(self.preferences, "target_muscle_groups", [])}
-        - Exercises type: {getattr(self.preferences, "exercise_types", [])}
+        - Exercise type: {getattr(self.preferences, "exercise_types", [])}
         - Seed exercises: {seed_text}
         - User music genres: {getattr(self.preferences, "music_genres", [])}
         - Music tempo: {getattr(self.preferences, "music_tempo", "medium")}

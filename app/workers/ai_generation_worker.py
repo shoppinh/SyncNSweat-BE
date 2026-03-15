@@ -94,13 +94,15 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
     request_id = int(envelope.payload["request_id"])
     user_id = int(envelope.payload["user_id"])
     profile_id = int(envelope.payload["profile_id"])
-    profile = envelope.payload["profile"]
-    preferences = envelope.payload["preferences"]
 
     db: Session = SessionLocal()
     request_repo = WorkoutRequestRepository(db)
     outbox_service = OutboxService(db)
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
 
+    profile = profile_repo.get_by_id(profile_id)
+    preferences = preferences_repo.get_by_profile_id(profile_id)
     try:
         # Short transaction 1: read required data.  Detach profile/preferences
         # before committing so their attributes remain accessible after the
