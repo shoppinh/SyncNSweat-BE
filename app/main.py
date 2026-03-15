@@ -22,6 +22,44 @@ _outbox_task: Optional[asyncio.Task[None]] = None
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     """Manage background worker lifecycle alongside the FastAPI app."""
     global _outbox_task
+    
+    # Optional DB seeding on startup
+    try:
+        from app.db.session import SessionLocal
+        from app.repositories.exercise import ExerciseRepository
+        from app.services.exercise import ExerciseService
+        from app.models.workout import Exercise
+
+        with SessionLocal() as db:
+            # Check if the exercises table has any rows
+            if db.query(Exercise).first() is None:
+                logger.info("Exercises table is empty. Syncing from external source...")
+                exercise_repo = ExerciseRepository(db)
+                exercise_service = ExerciseService(db)
+                
+                exercises = [
+                    {
+                        "name": ex["name"],
+                        "body_part": ex["bodyPart"],
+                        "target": ex["target"],
+                        "secondary_muscles": ex["secondaryMuscles"],
+                        "equipment": ex["equipment"],
+                        "gif_url": ex["gifUrl"],
+                        "instructions": ex["instructions"],
+                    }
+                    for ex in exercise_service.get_exercises_from_external_source(
+                        params={"limit": 1324}
+                    )
+                ]
+                exercise_repo.bulk_insert(exercises)
+                db.commit() # Important when bulk inserting or committing changes manually if autoflush/autocommit is false
+                logger.info("Finished syncing external exercises successfully.")
+            else:
+                logger.info("Exercises table already populated. Skipping sync.")
+    except Exception as e:
+        logger.warning(f"Failed to check or sync initial exercises: {e}")
+
+    # Start outbox worker
     try:
         from app.workers.outbox_publisher_worker import \
             run_forever as _outbox_run
