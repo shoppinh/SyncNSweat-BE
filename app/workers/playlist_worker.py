@@ -19,6 +19,8 @@ from app.repositories.workout_request import WorkoutRequestRepository
 from app.services.outbox import OutboxService
 from app.services.playlist_selector import PlaylistSelectorService
 from app.services.spotify import SpotifyService
+from app.models.preferences import Preferences
+from app.models.profile import Profile
 
 QUEUE_NAME: Final[str] = "playlist-generation"
 ROUTING_KEY: Final[str] = "workout.draft.generated"
@@ -48,14 +50,11 @@ def _unavailable_playlist(*, source: str = "fallback_none") -> Dict[str, Any]:
 async def _resolve_playlist_from_ai_candidates(
     db: Session,
     *,
-    profile_id: int,
+    profile: Profile,
+    preferences: Preferences,
     draft: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    profile_repo = ProfileRepository(db)
-    preferences_repo = PreferencesRepository(db)
 
-    profile = profile_repo.get_by_id(profile_id)
-    preferences = preferences_repo.get_by_profile_id(profile_id)
     if profile is None or preferences is None:
         return None
 
@@ -133,24 +132,26 @@ async def _resolve_playlist(
     profile_id: int,
     draft: Dict[str, Any],
 ) -> Dict[str, Any]:
+    profile_repo = ProfileRepository(db)
+    preferences_repo = PreferencesRepository(db)
+    profile = profile_repo.get_by_id(profile_id)
+    preferences = preferences_repo.get_by_profile_id(profile_id)
+
+    if profile is None or preferences is None:
+        incr("playlist_fail_open_count")
+        return _unavailable_playlist()
+
     try:
         ai_playlist = await _resolve_playlist_from_ai_candidates(
             db,
-            profile_id=profile_id,
+            profile=profile,
+            preferences=preferences,
             draft=draft,
         )
     except Exception:
         ai_playlist = None
     if ai_playlist is not None:
         return ai_playlist
-
-    profile_repo = ProfileRepository(db)
-    preferences_repo = PreferencesRepository(db)
-    profile = profile_repo.get_by_id(profile_id)
-    preferences = preferences_repo.get_by_profile_id(profile_id)
-    if profile is None or preferences is None:
-        incr("playlist_fail_open_count")
-        return _unavailable_playlist()
 
     try:
         selector = PlaylistSelectorService(db, profile, preferences)

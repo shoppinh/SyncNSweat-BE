@@ -94,11 +94,11 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
     request_id = int(envelope.payload["request_id"])
     user_id = int(envelope.payload["user_id"])
     profile_id = int(envelope.payload["profile_id"])
+    profile = envelope.payload["profile"]
+    preferences = envelope.payload["preferences"]
 
     db: Session = SessionLocal()
     request_repo = WorkoutRequestRepository(db)
-    profile_repo = ProfileRepository(db)
-    preferences_repo = PreferencesRepository(db)
     outbox_service = OutboxService(db)
 
     try:
@@ -107,8 +107,6 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
         # transaction closes (expire_on_commit=True would otherwise expire them).
         with db.begin():
             request = request_repo.get_by_id(request_id)
-            profile = profile_repo.get_by_id(profile_id)
-            preferences = preferences_repo.get_by_profile_id(profile_id)
 
             if request is None or profile is None or preferences is None:
                 if request is not None:
@@ -123,13 +121,6 @@ async def process_event(message_payload: Dict[str, Any]) -> None:
                         "AI generation skipped: request_id=%s not found", request_id
                     )
                 return
-
-            # Detach profile and preferences so their column attributes remain
-            # accessible after this transaction commits (expire_on_commit=True
-            # would otherwise expire them on the session).  request is not
-            # expunged because it will be re-fetched in the write transaction.
-            db.expunge(profile)
-            db.expunge(preferences)
 
         # Call the external Gemini API outside any DB transaction to avoid
         # holding a connection or row-level locks across network I/O.

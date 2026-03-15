@@ -62,6 +62,7 @@ def _build_context_payload(
             "target_muscle_groups": getattr(preferences, "target_muscle_groups", None),
             "exercise_types": getattr(preferences, "exercise_types", None),
             "music_genres": getattr(preferences, "music_genres", None),
+            "music_tempo": getattr(preferences, "music_tempo", None),
         },
         "recent_workouts": [
             {
