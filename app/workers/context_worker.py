@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Final, Optional, cast
+from typing import Any, Dict, Final, cast
 
-from aio_pika import IncomingMessage
 from aio_pika.abc import AbstractIncomingMessage
 from sqlalchemy.orm import Session
 
@@ -12,7 +11,8 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.messaging.connection import RabbitMQConnectionManager
 from app.messaging.consumer import EventConsumer
-from app.messaging.events import EventEnvelope, EventType, create_event_envelope
+from app.messaging.events import (EventEnvelope, EventType,
+                                  create_event_envelope)
 from app.observability.metrics import incr, timed
 from app.repositories.preferences import PreferencesRepository
 from app.repositories.profile import ProfileRepository
@@ -28,53 +28,6 @@ def _safe_json(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
         return obj
     return {}
-
-
-def _build_context_payload(
-    db: Session, request_id: int, user_id: int, profile_id: int
-) -> Dict[str, Any]:
-    profile_repo = ProfileRepository(db)
-    preferences_repo = PreferencesRepository(db)
-    workout_repo = WorkoutRepository(db)
-
-    profile = profile_repo.get_by_id(profile_id)
-    preferences = preferences_repo.get_by_profile_id(profile_id)
-    recent_workouts = workout_repo.get_by_user_id(user_id=user_id, skip=0, limit=5)
-
-    return {
-        "request_id": request_id,
-        "user_id": user_id,
-        "profile_id": profile_id,
-        "profile": {
-            "fitness_goal": getattr(
-                getattr(profile, "fitness_goal", None), "value", None
-            ),
-            "fitness_level": getattr(
-                getattr(profile, "fitness_level", None), "value", None
-            ),
-            "workout_duration_minutes": getattr(
-                profile, "workout_duration_minutes", None
-            ),
-            "available_days": getattr(profile, "available_days", None),
-        },
-        "preferences": {
-            "available_equipment": getattr(preferences, "available_equipment", None),
-            "target_muscle_groups": getattr(preferences, "target_muscle_groups", None),
-            "exercise_types": getattr(preferences, "exercise_types", None),
-            "music_genres": getattr(preferences, "music_genres", None),
-        },
-        "recent_workouts": [
-            {
-                "id": cast(int, workout.id),
-                "focus": getattr(workout, "focus", None),
-                "date": workout.date.isoformat()
-                if getattr(workout, "date", None)
-                else None,
-            }
-            for workout in recent_workouts
-        ],
-    }
-
 
 def process_event(message_payload: Dict[str, Any]) -> None:
     envelope = EventEnvelope.model_validate(message_payload)
@@ -95,17 +48,14 @@ def process_event(message_payload: Dict[str, Any]) -> None:
                 if request is None:
                     raise ValueError(f"workout request not found: {request_id}")
 
-                context_payload = _build_context_payload(
-                    db=db,
-                    request_id=request_id,
-                    user_id=user_id,
-                    profile_id=profile_id,
-                )
-
                 next_event = create_event_envelope(
                     event_type=EventType.CONTEXT_PREPARED,
                     source="worker.context",
-                    payload=context_payload,
+                    payload={
+                        "request_id": request_id,
+                        "user_id": user_id,
+                        "profile_id": profile_id,
+                    },
                     saga_id=envelope.saga_id,
                     correlation_id=envelope.correlation_id,
                 )

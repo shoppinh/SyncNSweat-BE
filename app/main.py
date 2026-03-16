@@ -1,3 +1,4 @@
+
 import asyncio
 import contextlib
 import logging
@@ -22,6 +23,52 @@ _outbox_task: Optional[asyncio.Task[None]] = None
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     """Manage background worker lifecycle alongside the FastAPI app."""
     global _outbox_task
+    
+    # Optional DB seeding on startup, gated by setting
+    if getattr(settings, "ENABLE_STARTUP_SEEDING", False):
+        async def seed_exercises():
+            try:
+                from app.db.session import SessionLocal
+                from app.models.workout import Exercise
+                from app.repositories.exercise import ExerciseRepository
+                from app.services.exercise import ExerciseService
+
+                def sync_seed():
+                    with SessionLocal() as db:
+                        # Check if the exercises table has any rows
+                        if db.query(Exercise).first() is None:
+                            logger.info("Exercises table is empty. Syncing from external source...")
+                            exercise_repo = ExerciseRepository(db)
+                            exercise_service = ExerciseService(db)
+
+                            exercises = [
+                                {
+                                    "name": ex["name"],
+                                    "body_part": ex["bodyPart"],
+                                    "target": ex["target"],
+                                    "secondary_muscles": ex["secondaryMuscles"],
+                                    "equipment": ex["equipment"],
+                                    "gif_url": ex["gifUrl"],
+                                    "instructions": ex["instructions"],
+                                }
+                                for ex in exercise_service.get_exercises_from_external_source(
+                                    params={"limit": 1324}
+                                )
+                            ]
+                            # Use transaction context for bulk insert to ensure rollback on failure
+                            with db.begin():
+                                exercise_repo.bulk_insert(exercises)
+                            logger.info("Finished syncing external exercises successfully.")
+                        else:
+                            logger.info("Exercises table already populated. Skipping sync.")
+
+                await asyncio.to_thread(sync_seed)
+            except Exception as e:
+                logger.warning(f"Failed to check or sync initial exercises: {e}")
+
+        await seed_exercises()
+
+    # Start outbox worker
     try:
         from app.workers.outbox_publisher_worker import \
             run_forever as _outbox_run
@@ -40,6 +87,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         with contextlib.suppress(asyncio.CancelledError):
             await _outbox_task
         logger.info("Outbox worker stopped")
+
 
 
 app = FastAPI(title=settings.PROJECT_NAME, version=settings.VERSION, lifespan=lifespan)
